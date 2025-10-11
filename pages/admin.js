@@ -1,5 +1,20 @@
 import { useEffect, useState } from "react";
 
+function toIsoFromLocal(dateStr, timeStr) {
+  if (!dateStr && !timeStr) return null;
+  if (!dateStr) return null; // need at least a date
+  const [y, m, d] = dateStr.split("-").map(Number);
+  let hh = 0, mm = 0;
+  if (timeStr) {
+    const parts = timeStr.split(":").map(Number);
+    hh = parts[0] ?? 0;
+    mm = parts[1] ?? 0;
+  }
+  // Construct in LOCAL time, then convert to ISO (UTC Z)
+  const dt = new Date(y, (m || 1) - 1, d || 1, hh, mm, 0);
+  return dt.toISOString();
+}
+
 export default function Admin() {
   const [tenantId] = useState("default");
   const [tasks, setTasks] = useState([]);
@@ -7,11 +22,14 @@ export default function Admin() {
   const [limits, setLimits] = useState({Hotel:1000, Food:1000, Travel:1000, Other:1000});
   const [expenses, setExpenses] = useState([]);
   const [events, setEvents] = useState([]);
-  // create form
+
+  // Create form state
   const [title, setTitle] = useState("");
   const [assignee, setAssignee] = useState("");
-  const [slaStart, setSlaStart] = useState("");
-  const [slaEnd, setSlaEnd] = useState("");
+  const [slaStartDate, setSlaStartDate] = useState("");
+  const [slaStartTime, setSlaStartTime] = useState("");
+  const [slaEndDate, setSlaEndDate] = useState("");
+  const [slaEndTime, setSlaEndTime] = useState("");
 
   async function loadTasks() {
     const j = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
@@ -44,18 +62,27 @@ export default function Admin() {
 
   async function createTask() {
     if (!title) return alert("Title required");
+    const slaStartISO = toIsoFromLocal(slaStartDate, slaStartTime);
+    const slaEndISO   = toIsoFromLocal(slaEndDate, slaEndTime);
+
     const body = {
       tenantId, title, assignee,
-      slaStart: slaStart ? new Date(slaStart).toISOString() : null,
-      slaEnd:   slaEnd   ? new Date(slaEnd).toISOString()   : null,
+      slaStart: slaStartISO,
+      slaEnd:   slaEndISO,
       type: "Data collection",
       status: "ASSIGNED",
       expenseLimits: limits
     };
+
     const r = await fetch(`/api/tasks`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
     const j = await r.json();
     if (!r.ok) return alert(j.error||"create failed");
-    setTitle(""); setAssignee(""); setSlaStart(""); setSlaEnd("");
+
+    // reset form
+    setTitle(""); setAssignee("");
+    setSlaStartDate(""); setSlaStartTime("");
+    setSlaEndDate(""); setSlaEndTime("");
+
     await loadTasks();
     await selectTask(j);
   }
@@ -70,22 +97,53 @@ export default function Admin() {
     <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto"}}>
       <h1>Admin portal</h1>
 
+      {/* Create task */}
       <section style={{border:"1px solid #ddd", borderRadius:8, padding:12, marginBottom:16}}>
         <h2>Create task</h2>
-        <div style={{display:"grid", gridTemplateColumns:"2fr 1fr 1fr 1fr", gap:8, alignItems:"end"}}>
-          <label>Title<input value={title} onChange={e=>setTitle(e.target.value)} placeholder="e.g., Visit Site A"/></label>
-          <label>Assignee<input value={assignee} onChange={e=>setAssignee(e.target.value)} placeholder="emp-001"/></label>
-          <label>SLA start<input type="datetime-local" value={slaStart} onChange={e=>setSlaStart(e.target.value)}/></label>
-          <label>SLA end<input type="datetime-local" value={slaEnd} onChange={e=>setSlaEnd(e.target.value)}/></label>
+
+        {/* Top row */}
+        <div style={{display:"grid", gridTemplateColumns:"2fr 1fr", gap:8, alignItems:"end", marginBottom:10}}>
+          <label>Title
+            <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="e.g., Visit Site A"/>
+          </label>
+          <label>Assignee
+            <input value={assignee} onChange={e=>setAssignee(e.target.value)} placeholder="emp-001"/>
+          </label>
         </div>
-        <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, maxWidth:720, marginTop:8}}>
+
+        {/* SLA rows with separate Date + Time */}
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:8, alignItems:"end"}}>
+          <label>SLA start (date)
+            <input type="date" value={slaStartDate} onChange={e=>setSlaStartDate(e.target.value)} />
+          </label>
+          <label>SLA start (time)
+            <input type="time" step="60" value={slaStartTime} onChange={e=>setSlaStartTime(e.target.value)} />
+          </label>
+          <label>SLA end (date)
+            <input type="date" value={slaEndDate} onChange={e=>setSlaEndDate(e.target.value)} />
+          </label>
+          <label>SLA end (time)
+            <input type="time" step="60" value={slaEndTime} onChange={e=>setSlaEndTime(e.target.value)} />
+          </label>
+        </div>
+
+        {/* Limits */}
+        <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, maxWidth:720, marginTop:10}}>
           {["Hotel","Food","Travel","Other"].map(k=>(
-            <label key={k}>{k}<input type="number" step="1" value={limits[k]??0} onChange={e=>upd(k, e.target.value)}/></label>
+            <label key={k}>{k}
+              <input type="number" step="1" value={limits[k]??0} onChange={e=>upd(k, e.target.value)}/>
+            </label>
           ))}
         </div>
+
+        <div style={{marginTop:10, fontSize:12, color:"#666"}}>
+          Times are interpreted in your local timezone and saved as ISO (UTC).
+        </div>
+
         <button onClick={createTask} style={{marginTop:10}}>Create task</button>
       </section>
 
+      {/* Lists */}
       <section style={{display:"grid", gridTemplateColumns:"1fr 2fr", gap:16}}>
         <div>
           <h2>Tasks</h2>
@@ -130,7 +188,11 @@ export default function Admin() {
                   <li key={e.id} style={{margin:"0.75rem 0"}}>
                     <div><strong>{e.category || "(uncategorized)"}:</strong> ₹{e.editedTotal ?? e.total} — {e.approval?.status || "—"}</div>
                     <div style={{fontSize:12, color:"#555"}}>{new Date(e.createdAt).toLocaleString()} — {e.merchant || "Merchant"}</div>
-                    <button onClick={()=>openReceipt(e.blobPath)} style={{marginTop:6}}>Open receipt</button>
+                    <button onClick={()=>{
+                      const filename = e.blobPath.split("/").slice(-1)[0];
+                      fetch(`/api/receipts/readSas?taskId=${selected.id}&filename=${encodeURIComponent(filename)}&minutes=5`)
+                        .then(r=>r.json()).then(j=>{ if (j.readUrl) window.open(j.readUrl, "_blank"); });
+                    }} style={{marginTop:6}}>Open receipt</button>
                     {e.isManualOverride && <span style={{marginLeft:8, fontSize:12, color:"#b95"}}>edited total</span>}
                   </li>
                 ))}

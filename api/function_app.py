@@ -30,6 +30,9 @@ def _tasks_container():
 def _expenses_container():
     return _get_container_named(os.environ.get("EXPENSES_CONTAINER", "Expenses"))
 
+def _events_container():
+    return _get_container_named(os.environ.get("EVENTS_CONTAINER", "TaskEvents"))
+
 DEFAULT_LIMITS = {"Hotel": 1000, "Food": 1000, "Travel": 1000, "Other": 1000}
 
 def _get_task(tenant_id: str, task_id: str):
@@ -37,10 +40,23 @@ def _get_task(tenant_id: str, task_id: str):
     try:
         return c.read_item(item=task_id, partition_key=tenant_id)
     except Exception:
-        # fallback query
         q = "SELECT * FROM c WHERE c.docType='Task' AND c.tenantId=@t AND c.id=@id"
         items = list(c.query_items(q, parameters=[{"name":"@t","value":tenant_id},{"name":"@id","value":task_id}], enable_cross_partition_query=True))
         return items[0] if items else None
+
+def _save_task(doc):
+    _tasks_container().replace_item(item=doc, body=doc)
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+def _parse_iso(s):
+    if not s: return None
+    # allow 2025-10-11T12:34:00Z and with offset
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 # ---------- Blob helpers ----------
 from azure.storage.blob import (
@@ -98,7 +114,7 @@ def create_task(req: func.HttpRequest) -> func.HttpResponse:
             "slaEnd": data.get("slaEnd"),
             "status": data.get("status", "ASSIGNED"),
             "expenseLimits": limits,
-            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "createdAt": _now_iso(),
             "docType": "Task"
         }
         c.create_item(item)
@@ -130,8 +146,99 @@ def update_task_limits(req: func.HttpRequest) -> func.HttpResponse:
         c = _tasks_container()
         item = c.read_item(item=task_id, partition_key=tenant)
         item["expenseLimits"] = limits
-        c.replace_item(item=item, body=item)
+        _save_task(item)
         return func.HttpResponse(json.dumps(item), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+# ---- Check-in / Check-out / Timeline ----
+@app.route(route="tasks/checkin", methods=["POST"])
+def tasks_checkin(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        data = req.get_json()
+        tenant = data.get("tenantId","default")
+        task_id = data.get("taskId")
+        lat = data.get("lat")
+        lng = data.get("lng")
+        if not task_id:
+            return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
+        task = _get_task(tenant, task_id)
+        if not task:
+            return func.HttpResponse(json.dumps({"error":"task not found"}), mimetype="application/json", status_code=404)
+        evc = _events_container()
+        ev = {
+            "id": str(uuid.uuid4()),
+            "docType":"TaskEvent",
+            "tenantId": tenant,
+            "taskId": task_id,
+            "eventType":"CHECK_IN",
+            "ts": _now_iso(),
+            "lat": lat, "lng": lng
+        }
+        evc.create_item(ev)
+        task["status"] = "IN_PROGRESS"
+        task["checkInAt"] = ev["ts"]
+        _save_task(task)
+        return func.HttpResponse(json.dumps(ev), mimetype="application/json", status_code=201)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+@app.route(route="tasks/checkout", methods=["POST"])
+def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        data = req.get_json()
+        tenant = data.get("tenantId","default")
+        task_id = data.get("taskId")
+        reason = data.get("reason")
+        lat = data.get("lat"); lng = data.get("lng")
+        if not task_id:
+            return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
+        task = _get_task(tenant, task_id)
+        if not task:
+            return func.HttpResponse(json.dumps({"error":"task not found"}), mimetype="application/json", status_code=404)
+
+        now = datetime.now(timezone.utc)
+        sla_end = _parse_iso(task.get("slaEnd"))
+        late = bool(sla_end and now > sla_end)
+        if late and not reason:
+            return func.HttpResponse(json.dumps({"error":"reason required because task is beyond SLA"}), mimetype="application/json", status_code=400)
+
+        evc = _events_container()
+        ev = {
+            "id": str(uuid.uuid4()),
+            "docType":"TaskEvent",
+            "tenantId": tenant,
+            "taskId": task_id,
+            "eventType":"CHECK_OUT",
+            "ts": _now_iso(),
+            "lat": lat, "lng": lng,
+            "late": late,
+            "reason": reason
+        }
+        evc.create_item(ev)
+
+        task["status"] = "COMPLETED"
+        task["checkOutAt"] = ev["ts"]
+        task["slaBreached"] = late
+        if reason: task["lateReason"] = reason
+        _save_task(task)
+
+        return func.HttpResponse(json.dumps({"event": ev, "task": task}),
+                                 mimetype="application/json", status_code=201)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+@app.route(route="tasks/events", methods=["GET"])
+def tasks_events(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        tenant = req.params.get("tenantId", "default")
+        task_id = req.params.get("taskId")
+        if not task_id:
+            return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
+        c = _events_container()
+        q = "SELECT * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t AND c.taskId=@task ORDER BY c.ts ASC"
+        items = list(c.query_items(q, parameters=[{"name":"@t","value":tenant},{"name":"@task","value":task_id}], enable_cross_partition_query=True))
+        return func.HttpResponse(json.dumps(items), mimetype="application/json", status_code=200)
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
@@ -182,7 +289,7 @@ def receipts_list(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
-# ---- OCR: Document Intelligence (prebuilt-receipt) ----
+# ---- OCR + Expenses (existing endpoints kept) ----
 @app.route(route="receipts/ocr", methods=["POST"])
 def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
     try:
@@ -223,7 +330,6 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
                 if result.get("status") in ("succeeded", "failed", "cancelled"):
                     break
 
-        # Extract a few useful fields
         doc = {}
         try:
             docs = result.get("analyzeResult", {}).get("documents", [])
@@ -259,10 +365,10 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
                 "total": doc.get("total"),
                 "currency": doc.get("currency"),
                 "txnDate": doc.get("date"),
-                "category": None,  # to be set by finalize
+                "category": None,
                 "ocrModel": model_id,
                 "ocrApiVersion": api_ver,
-                "createdAt": datetime.now(timezone.utc).isoformat(),
+                "createdAt": _now_iso(),
                 "isManualOverride": False,
                 "approval": None
             }
@@ -275,20 +381,8 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps({"error": str(e)}),
                                  mimetype="application/json", status_code=500)
 
-# ---- Expenses: finalize (compute approval), list helpers ----
 @app.route(route="expenses/finalize", methods=["POST"])
 def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    Body: {
-      "tenantId":"default",
-      "expenseId":"...",               # preferred OR (taskId + blobPath)
-      "taskId":"...", "blobPath":"...",
-      "category":"Food|Hotel|Travel|Other",
-      "total": 586.09,                 # if user edits total
-      "comment":"ran over due to xyz",
-      "submittedBy":"emp-001"
-    }
-    """
     try:
       data = req.get_json()
       tenant = data.get("tenantId","default")
@@ -301,7 +395,6 @@ def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
       if data.get("expenseId"):
           expense = c.read_item(item=data["expenseId"], partition_key=tenant)
       else:
-          # fallback lookup by task+blob
           q = "SELECT * FROM c WHERE c.docType='Expense' AND c.tenantId=@t AND c.taskId=@task AND c.blobPath=@blob"
           items = list(c.query_items(q, parameters=[
               {"name":"@t","value":tenant},
@@ -309,11 +402,9 @@ def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
               {"name":"@blob","value":data.get("blobPath")}
           ], enable_cross_partition_query=True))
           if items: expense = items[0]
-
       if not expense:
           return func.HttpResponse(json.dumps({"error":"expense not found"}), mimetype="application/json", status_code=404)
 
-      # gather totals
       original_total = expense.get("total")
       edited_total = data.get("total", original_total)
       try:
@@ -327,17 +418,15 @@ def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
       if data.get("comment"): expense["comment"] = data["comment"]
       if data.get("submittedBy"): expense["submittedBy"] = data["submittedBy"]
 
-      # load task limits
       task = _get_task(expense.get("tenantId","default"), expense.get("taskId"))
       limits = (task or {}).get("expenseLimits") or DEFAULT_LIMITS
       limit_for_cat = limits.get(category, limits.get("Other", 1000))
 
-      # approval decision
       status = "AUTO_APPROVED" if (edited_total or 0) <= limit_for_cat else "PENDING_REVIEW"
       reason = "within limit" if status=="AUTO_APPROVED" else f"exceeds limit ({edited_total} > {limit_for_cat})"
       expense["approval"] = {
           "status": status,
-          "evaluatedAt": datetime.now(timezone.utc).isoformat(),
+          "evaluatedAt": _now_iso(),
           "limit": limit_for_cat,
           "reason": reason
       }

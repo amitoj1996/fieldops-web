@@ -6,46 +6,61 @@ function sanitizeName(name) {
 
 export default function Employee() {
   const [tenantId] = useState("default");
+  const [employeeId] = useState("emp-001"); // TODO: replace with signed-in user when we add auth
 
-  // Task picker state
+  // Task picker
   const [tasks, setTasks] = useState([]);
   const [taskQuery, setTaskQuery] = useState("");
-  const [taskId, setTaskId] = useState(""); // internal id used by API
+  const [taskId, setTaskId] = useState("");
 
-  // Expense upload/finalize state
+  // Timeline (persistent logs)
+  const [events, setEvents] = useState([]);
+
+  // Expense state
   const [file, setFile] = useState(null);
   const [category, setCategory] = useState("Food");
   const [editedTotal, setEditedTotal] = useState("");
   const [lateReason, setLateReason] = useState("");
-
-  const [log, setLog] = useState([]);
   const [ocr, setOcr] = useState(null);
   const [approval, setApproval] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [expenses, setExpenses] = useState([]);
 
-  const pushLog = (m) => setLog((l)=>[m, ...l]);
+  // Load tasks (non-completed) for the dropdown
+  useEffect(() => {
+    (async () => {
+      const r = await fetch(`/api/tasks?tenantId=${tenantId}`);
+      const j = await r.json();
+      const filtered = Array.isArray(j) ? j.filter(t => t.status !== "COMPLETED") : [];
+      setTasks(filtered);
+    })();
+  }, []);
 
-  // Load tasks for the dropdown
-  async function loadTasks() {
-    const r = await fetch(`/api/tasks?tenantId=${tenantId}`);
+  // Load timeline whenever task changes
+  useEffect(() => {
+    if (!taskId) { setEvents([]); return; }
+    loadEvents();
+  }, [taskId]);
+
+  async function loadEvents() {
+    if (!taskId) return;
+    const r = await fetch(`/api/tasks/events?taskId=${encodeURIComponent(taskId)}&tenantId=${tenantId}`);
     const j = await r.json();
-    // Show only non-completed tasks by default (employee-focused)
-    const filtered = Array.isArray(j) ? j.filter(t => t.status !== "COMPLETED") : [];
-    setTasks(filtered);
+    // ensure newest first in UI
+    const arr = Array.isArray(j) ? [...j].sort((a,b)=> new Date(b.ts) - new Date(a.ts)) : [];
+    setEvents(arr);
   }
-  useEffect(()=>{ loadTasks(); }, []);
 
   const filteredTasks = useMemo(()=>{
     const q = taskQuery.trim().toLowerCase();
     if (!q) return tasks;
-    return tasks.filter(t => {
-      const name = (t.title || "").toLowerCase();
-      return name.includes(q) || (t.id || "").toLowerCase().includes(q) || (t.assignee || "").toLowerCase().includes(q);
-    });
+    return tasks.filter(t => (t.title||"").toLowerCase().includes(q) || (t.assignee||"").toLowerCase().includes(q) || (t.id||"").toLowerCase().includes(q));
   }, [tasks, taskQuery]);
 
   const selectedTask = useMemo(()=> tasks.find(t => t.id === taskId) || null, [tasks, taskId]);
+
+  // Derived flags to control CI/CO buttons
+  const hasCheckIn  = events.some(e => e.eventType === "CHECK_IN");
+  const hasCheckOut = events.some(e => e.eventType === "CHECK_OUT");
 
   async function getPos() {
     if (!navigator.geolocation) return {};
@@ -61,11 +76,12 @@ export default function Employee() {
     const pos = await getPos();
     const r = await fetch("/api/tasks/checkin", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({tenantId, taskId, ...pos})
+      body: JSON.stringify({tenantId, taskId, employeeId, ...pos})
     });
     const j = await r.json();
     if (!r.ok) return alert(j.error||"check-in failed");
-    pushLog(`Checked in at ${j.ts}`);
+    await loadEvents(); // refresh persistent log & disable button
+    if (j.idempotent) alert("Already checked in for this task.");
   }
 
   async function checkOut() {
@@ -73,11 +89,12 @@ export default function Employee() {
     const pos = await getPos();
     const r = await fetch("/api/tasks/checkout", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({tenantId, taskId, reason: lateReason || undefined, ...pos})
+      body: JSON.stringify({tenantId, taskId, reason: lateReason || undefined, employeeId, ...pos})
     });
     const j = await r.json();
     if (!r.ok) return alert(j.error||"check-out failed");
-    pushLog(`Checked out at ${j.event.ts} ${j.event.late ? "(late)" : ""}`);
+    await loadEvents();
+    if (j.idempotent) alert("Already checked out for this task.");
   }
 
   async function handleSubmit(e) {
@@ -86,15 +103,14 @@ export default function Employee() {
     setLoading(true); setApproval(null); setOcr(null);
     try {
       const safeName = sanitizeName(file.name);
-      pushLog(`SAS for ${safeName}…`);
+
+      // SAS + Upload
       const sas = await fetch(`/api/receipts/sas?taskId=${encodeURIComponent(taskId)}&filename=${encodeURIComponent(safeName)}`).then(r=>r.json());
       if (sas.error) throw new Error(sas.error);
-
-      pushLog(`Uploading…`);
       const put = await fetch(sas.uploadUrl, { method:"PUT", headers:{ "x-ms-blob-type":"BlockBlob" }, body:file });
       if (!put.ok) throw new Error("Upload failed");
 
-      pushLog(`OCR…`);
+      // OCR (save)
       const ocrRes = await fetch(`/api/receipts/ocr`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ taskId, filename: safeName, tenantId, save: true })
@@ -103,7 +119,7 @@ export default function Employee() {
       if (!ocrRes.ok) throw new Error(ocrJson.error||"OCR error");
       setOcr(ocrJson.ocr || null);
 
-      // Grab the latest expense and finalize
+      // Finalize
       const all = await fetch(`/api/expenses?tenantId=${tenantId}`).then(r=>r.json());
       const latest = all[0];
       const finRes = await fetch(`/api/expenses/finalize`, {
@@ -111,21 +127,14 @@ export default function Employee() {
         body: JSON.stringify({
           tenantId, expenseId: latest.id, category,
           total: editedTotal ? Number(editedTotal) : latest.total,
-          submittedBy: "emp-001", comment: "Submitted from employee portal"
+          submittedBy: employeeId, comment: "Submitted from employee portal"
         })
       });
       const fin = await finRes.json();
       if (!finRes.ok) throw new Error(fin.error||"Finalize error");
       setApproval(fin.approval);
-      pushLog(`Expense ${fin.approval?.status}`);
-    } catch(e){ alert(e.message); pushLog("Error: "+e.message); }
+    } catch(e){ alert(e.message); }
     finally { setLoading(false); }
-  }
-
-  async function loadTaskExpenses() {
-    if (!taskId) return alert("Pick a Task");
-    const j = await fetch(`/api/expenses/byTask?taskId=${encodeURIComponent(taskId)}&tenantId=${tenantId}`).then(r=>r.json());
-    setExpenses(Array.isArray(j)?j:[]);
   }
 
   async function openReceipt(blobPath) {
@@ -139,7 +148,7 @@ export default function Employee() {
     <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto", maxWidth:900}}>
       <h1>Employee portal</h1>
 
-      {/* Task picker by NAME (id is hidden) */}
+      {/* Task picker by NAME */}
       <section style={{display:"grid", gap:10, margin:"1rem 0"}}>
         <div style={{display:"grid", gridTemplateColumns:"2fr 2fr auto", gap:8, alignItems:"end"}}>
           <label>Search task
@@ -155,19 +164,13 @@ export default function Employee() {
               ))}
             </select>
           </label>
-          <button onClick={loadTasks}>Refresh</button>
+          <button onClick={()=>{ if (taskId) loadEvents(); }}>Refresh log</button>
         </div>
-        {selectedTask && (
-          <div style={{fontSize:12, color:"#555"}}>
-            <strong>Selected:</strong> {(selectedTask.title || "(untitled)")} • Status: {selectedTask.status}
-            {selectedTask.assignee ? ` • Assignee: ${selectedTask.assignee}` : "" }
-          </div>
-        )}
 
         <div style={{display:"flex", gap:8}}>
-          <button onClick={checkIn} disabled={!taskId}>Check in</button>
+          <button onClick={checkIn} disabled={!taskId || hasCheckIn}>Check in</button>
           <input placeholder="late reason (only if late)" value={lateReason} onChange={e=>setLateReason(e.target.value)} style={{flex:1}}/>
-          <button onClick={checkOut} disabled={!taskId}>Check out</button>
+          <button onClick={checkOut} disabled={!taskId || !hasCheckIn || hasCheckOut}>Check out</button>
         </div>
       </section>
 
@@ -199,21 +202,13 @@ export default function Employee() {
       </div>}
 
       <hr/>
-      <h2>My task expenses</h2>
-      <button onClick={loadTaskExpenses} disabled={!taskId}>Refresh list</button>
+      <h2>Logs (timeline)</h2>
       <ul>
-        {expenses.map(e=>(
-          <li key={e.id} style={{margin:"0.75rem 0"}}>
-            <div><strong>{e.category || "(uncategorized)"}:</strong> ₹{e.editedTotal ?? e.total} — {e.approval?.status || "—"}</div>
-            <div style={{fontSize:13, color:"#555"}}>{new Date(e.createdAt).toLocaleString()}</div>
-            <div><button onClick={()=>openReceipt(e.blobPath)} style={{marginTop:6}}>Open receipt</button></div>
+        {events.map(ev=>(
+          <li key={ev.id} style={{margin:"0.5rem 0"}}>
+            {ev.eventType} — {new Date(ev.ts).toLocaleString()} {ev.late ? " (late)" : ""} {ev.reason ? `— ${ev.reason}` : ""}
           </li>
         ))}
-      </ul>
-
-      <hr/><h3>Logs</h3>
-      <ul style={{fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace", fontSize:12}}>
-        {log.map((m,i)=>(<li key={i}>{m}</li>))}
       </ul>
     </main>
   );

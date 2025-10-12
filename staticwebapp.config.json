@@ -16,10 +16,11 @@
     { "route": "/api/products", "methods": ["POST"], "allowedRoles": ["admin"] },
     { "route": "/api/tasks/limits", "allowedRoles": ["admin"] },
     { "route": "/api/tasks", "methods": ["POST"], "allowedRoles": ["admin"] },
-    { "route": "/api/tasks/update", "methods": ["POST"], "allowedRoles": ["admin"] },
-    { "route": "/api/*", "methods": ["OPTIONS"], "allowedRoles": ["anonymous"] },
 
-    { "route": "/api/*", "allowedRoles": ["authenticated", "employee","admin"] }
+    { "route": "/api/tasks/update", "methods": ["POST","PUT"], "allowedRoles": ["admin"] },
+
+    { "route": "/api/*", "methods": ["OPTIONS"], "allowedRoles": ["anonymous"] },
+    { "route": "/api/*", "allowedRoles": ["authenticated", "employee", "admin"] }
   ],
   "responseOverrides": {
     "401": { "rewrite": "/index.html" },

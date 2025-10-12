@@ -4,9 +4,9 @@
       "authLevel": "anonymous",
       "type": "httpTrigger",
       "direction": "in",
-      "name": "req",
-      "methods": ["post", "options"],
-      "route": "tasks/update"
+      "methods": ["post", "put", "options"],
+      "route": "tasks/update",
+      "name": "req"
     },
     {
       "type": "http",

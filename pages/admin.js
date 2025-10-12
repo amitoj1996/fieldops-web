@@ -40,7 +40,7 @@ export default function Admin() {
   const me = useAuth();
   const [tenantId] = useState("default");
 
-  // --- Reports (shared date filters for dashboard too) ---
+  // --- Reports (shared date filters for dashboard/charts/EotM) ---
   const [reportFrom, setReportFrom] = useState("");
   const [reportTo, setReportTo] = useState("");
   function downloadReport() {
@@ -78,6 +78,7 @@ export default function Admin() {
   useEffect(() => { loadProducts(); }, [tenantId]);
 
   // Pending review
+  theadjust();
   const [pending, setPending] = useState([]);
   const [loadingPending, setLoadingPending] = useState(true);
   const [decidingId, setDecidingId] = useState(null);
@@ -282,6 +283,58 @@ export default function Admin() {
     return { open, completed, breachRate, budget, spend, top };
   }, [tasksInRange, expensesInRange, tasksById]);
 
+  // ---- Employee of the Month (EoM) ----
+  // Scoring (simple & transparent):
+  // +10 per completed task
+  // +10 per on-time completion (COMPLETED without slaBreached)
+  // Budget bonus/penalty capped to ±20: +20 * (1 - spend/budget) if spend <= budget, else -20 * ((spend - budget)/max(budget,1))
+  const eom = useMemo(() => {
+    const byAssignee = {};
+    // prepare budgets per assignee (sum budgets from their tasks)
+    for (const t of tasksInRange) {
+      const a = (t.assignee || "—").toLowerCase();
+      const limits = t.expenseLimits || {};
+      const totalBudget = ["Hotel","Food","Travel","Other"].reduce((s,k)=> s + Number(limits[k]||0), 0);
+      const s = byAssignee[a] || (byAssignee[a] = { assignee:a, tasks:[], completed:0, onTime:0, breaches:0, budget:0, spend:0 });
+      s.tasks.push(t.id);
+      s.budget += totalBudget;
+      if ((t.status||"") === "COMPLETED") {
+        s.completed += 1;
+        if (!t.slaBreached) s.onTime += 1; else s.breaches += 1;
+      }
+    }
+    // add spend per assignee (non-rejected)
+    for (const e of expensesInRange) {
+      const st = (e.approval?.status) || "";
+      if (st === "REJECTED") continue;
+      const t = tasksById[e.taskId] || {};
+      const a = (t.assignee || "—").toLowerCase();
+      if (!byAssignee[a]) byAssignee[a] = { assignee:a, tasks:[], completed:0, onTime:0, breaches:0, budget:0, spend:0 };
+      const amt = Number(e.editedTotal ?? e.total ?? 0) || 0;
+      byAssignee[a].spend += amt;
+    }
+    const rows = Object.values(byAssignee).map(s => {
+      const base = s.completed * 10;
+      const ontime = s.onTime * 10;
+      let budgetBonus = 0;
+      if (s.budget > 0) {
+        if (s.spend <= s.budget) {
+          const underPct = 1 - (s.spend / s.budget); // 0..1
+          budgetBonus = Math.min(20, Math.max(0, 20 * underPct));
+        } else {
+          const overPct = (s.spend - s.budget) / s.budget; // >0
+          budgetBonus = -Math.min(20, 20 * overPct);
+        }
+      } else {
+        // No budget set, penalize positive spend slightly
+        if (s.spend > 0) budgetBonus = -10;
+      }
+      const score = Math.round(base + ontime + budgetBonus);
+      return { ...s, score };
+    }).sort((a,b)=> b.score - a.score);
+    return { rows, winner: rows[0] || null };
+  }, [tasksInRange, expensesInRange, tasksById]);
+
   // ---- Tasks list + Edit/Delete flow ----
   const [taskSearch, setTaskSearch] = useState("");
   const filteredTasks = useMemo(() => {
@@ -448,49 +501,77 @@ export default function Admin() {
           <KPI title="SLA breach rate" value={`${kpis.breachRate.toFixed(1)}%`} />
         </div>
 
-        {/* Spend vs Budget */}
-        <div style={{marginTop:8}}>
-          <h3 style={{margin:"8px 0"}}>Spend vs Budget (by category)</h3>
-          <div style={{overflowX:"auto"}}>
-            <table style={{borderCollapse:"collapse", minWidth:520}}>
-              <thead>
-                <tr style={{textAlign:"left", borderBottom:"1px solid #eee"}}>
-                  <th style={{padding:"6px 8px"}}>Category</th>
-                  <th style={{padding:"6px 8px"}}>Budget</th>
-                  <th style={{padding:"6px 8px"}}>Spend</th>
-                  <th style={{padding:"6px 8px"}}>% Used</th>
-                </tr>
-              </thead>
-              <tbody>
-                {["Hotel","Food","Travel","Other"].map(k=>{
-                  const b = Number(kpis.budget[k] || 0);
-                  const s = Number(kpis.spend[k] || 0);
-                  const pct = b > 0 ? Math.min(100, (s/b)*100) : (s>0 ? 100 : 0);
-                  return (
-                    <tr key={k} style={{borderBottom:"1px solid #f5f5f5"}}>
-                      <td style={{padding:"6px 8px"}}>{k}</td>
-                      <td style={{padding:"6px 8px"}}>{ru(b)}</td>
-                      <td style={{padding:"6px 8px"}}>{ru(s)}</td>
-                      <td style={{padding:"6px 8px"}}>{pct.toFixed(1)}%</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        {/* CHARTS */}
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, alignItems:"start"}}>
+          <div>
+            <h3 style={{margin:"8px 0"}}>Spend vs Budget (by category)</h3>
+            <GroupedBars
+              categories={["Hotel","Food","Travel","Other"]}
+              series={[
+                { name: "Budget", values: ["Hotel","Food","Travel","Other"].map(k=>Number(kpis.budget[k]||0)) },
+                { name: "Spend",  values: ["Hotel","Food","Travel","Other"].map(k=>Number(kpis.spend[k]||0)) }
+              ]}
+              height={220}
+            />
+          </div>
+          <div>
+            <h3 style={{margin:"8px 0"}}>Top spenders</h3>
+            <HBar
+              data={(kpis.top||[]).map(r => ({ label: r.assignee || "—", value: Number(r.total||0) }))}
+              height={220}
+              maxBars={5}
+            />
           </div>
         </div>
 
-        {/* Top spenders */}
-        <div style={{marginTop:12}}>
-          <h3 style={{margin:"8px 0"}}>Top spenders</h3>
-          {kpis.top.length === 0 ? <div style={{color:"#666"}}>No expenses in this range.</div> : (
-            <ol style={{margin:"6px 0 0 18px", padding:0}}>
-              {kpis.top.map(row => (
-                <li key={row.assignee} style={{marginBottom:4}}>
-                  <strong>{row.assignee || "—"}</strong> — {ru(row.total)}
-                </li>
-              ))}
-            </ol>
+        {/* EOM */}
+        <div style={{marginTop:16}}>
+          <h3 style={{margin:"8px 0"}}>Employee of the Month</h3>
+          {(!eom.rows || eom.rows.length===0) ? (
+            <div style={{color:"#666"}}>No activity in this range.</div>
+          ) : (
+            <>
+              <div style={{padding:"8px 10px", border:"1px dashed #d7e7d7", borderRadius:8, background:"#f7fff7", marginBottom:8}}>
+                🏆 <strong>Winner:</strong> {eom.winner.assignee || "—"} &nbsp;—&nbsp;
+                <strong>Score:</strong> {eom.winner.score} &nbsp;|&nbsp;
+                <strong>Completed:</strong> {eom.winner.completed} &nbsp;|&nbsp;
+                <strong>On-time:</strong> {eom.winner.onTime} &nbsp;|&nbsp;
+                <strong>Spend/Budget:</strong> {ru(eom.winner.spend)} / {ru(eom.winner.budget)}
+              </div>
+              <div style={{overflowX:"auto"}}>
+                <table style={{borderCollapse:"collapse", width:"100%", minWidth:720}}>
+                  <thead>
+                    <tr style={{textAlign:"left", borderBottom:"1px solid #eee"}}>
+                      <th style={{padding:"6px 8px"}}>#</th>
+                      <th style={{padding:"6px 8px"}}>Employee</th>
+                      <th style={{padding:"6px 8px"}}>Score</th>
+                      <th style={{padding:"6px 8px"}}>Completed</th>
+                      <th style={{padding:"6px 8px"}}>On-time</th>
+                      <th style={{padding:"6px 8px"}}>Breaches</th>
+                      <th style={{padding:"6px 8px"}}>Spend</th>
+                      <th style={{padding:"6px 8px"}}>Budget</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {eom.rows.map((r, i) => (
+                      <tr key={r.assignee} style={{borderBottom:"1px solid #f4f4f4", background: i===0 ? "#fffbef" : undefined}}>
+                        <td style={{padding:"6px 8px"}}>{i+1}</td>
+                        <td style={{padding:"6px 8px"}}><strong>{r.assignee || "—"}</strong></td>
+                        <td style={{padding:"6px 8px"}}>{r.score}</td>
+                        <td style={{padding:"6px 8px"}}>{r.completed}</td>
+                        <td style={{padding:"6px 8px"}}>{r.onTime}</td>
+                        <td style={{padding:"6px 8px"}}>{r.breaches}</td>
+                        <td style={{padding:"6px 8px"}}>{ru(r.spend)}</td>
+                        <td style={{padding:"6px 8px"}}>{ru(r.budget)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{fontSize:12, color:"#666", marginTop:6}}>
+                Scoring: +10 per completed task, +10 per on-time completion, and budget bonus/penalty up to ±20 based on spend vs total budget of that employee’s tasks in range.
+              </div>
+            </>
           )}
         </div>
       </section>
@@ -935,6 +1016,103 @@ function KPI({title, value}) {
       <div style={{fontSize:22, fontWeight:700, marginTop:2}}>{value}</div>
     </div>
   );
+}
+
+// ---- Tiny, dependency-free SVG charts ----
+function GroupedBars({ categories, series, height=220, width=520, padding=28 }) {
+  const max = Math.max(1, ...series.flatMap(s => s.values));
+  const barW = 18;
+  const gapInner = 10;
+  const groupW = (series.length * barW) + gapInner*(series.length-1);
+  const gapOuter = 20;
+  const totalW = Math.max(width, padding*2 + categories.length*groupW + (categories.length-1)*gapOuter);
+  const h = height;
+  const chartH = h - padding*1.6;
+  const baselineY = chartH + padding*0.2;
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${totalW} ${h}`} role="img" aria-label="Grouped bar chart">
+      {/* axes */}
+      <line x1={padding} y1={baselineY} x2={totalW-padding} y2={baselineY} stroke="#ddd"/>
+      {/* y ticks */}
+      {Array.from({length:4}, (_,i)=> (i+1)).map(i=>{
+        const y = baselineY - (i*(chartH/4));
+        return <g key={i}>
+          <line x1={padding} x2={totalW-padding} y1={y} y2={y} stroke="#f5f5f5"/>
+          <text x={padding-6} y={y} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="#777">
+            {formatINR(max*(i/4))}
+          </text>
+        </g>;
+      })}
+
+      {categories.map((c, idx) => {
+        const gx = padding + idx*(groupW + gapOuter);
+        return (
+          <g key={c} transform={`translate(${gx},0)`}>
+            {/* bars */}
+            {series.map((s, si) => {
+              const v = Number(s.values[idx]||0);
+              const hgt = Math.max(0, (v/max) * (chartH-4));
+              const x = si*(barW + gapInner);
+              const y = baselineY - hgt;
+              const fill = si === 0 ? "#dbeafe" : "#c7f9e3";
+              const stroke = si === 0 ? "#9ac1ee" : "#85dcb5";
+              return <rect key={si} x={x} y={y} width={barW} height={hgt} fill={fill} stroke={stroke} />;
+            })}
+            {/* label */}
+            <text x={groupW/2} y={baselineY+12} textAnchor="middle" fontSize="11" fill="#555">{c}</text>
+          </g>
+        );
+      })}
+
+      {/* legend */}
+      <g transform={`translate(${padding}, ${padding-12})`}>
+        {series.map((s, i)=>(
+          <g key={s.name} transform={`translate(${i*110},0)`}>
+            <rect width="10" height="10" fill={i===0?"#dbeafe":"#c7f9e3"} stroke={i===0?"#9ac1ee":"#85dcb5"}/>
+            <text x="14" y="9" fontSize="11" fill="#555">{s.name}</text>
+          </g>
+        ))}
+      </g>
+    </svg>
+  );
+}
+
+function HBar({ data, height=220, width=520, padding=28, maxBars=5 }) {
+  const rows = (data||[]).slice(0, maxBars);
+  const max = Math.max(1, ...rows.map(r=>r.value));
+  const rowH = Math.max(20, (height - padding*1.6) / Math.max(1, rows.length));
+  const totalH = Math.max(height, padding*1.6 + rows.length*rowH);
+  const chartW = width - padding*2;
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${width} ${totalH}`} role="img" aria-label="Horizontal bar chart">
+      {rows.map((r, i) => {
+        const y = padding + i*rowH;
+        const w = Math.max(2, (r.value/max)*chartW);
+        return (
+          <g key={r.label}>
+            <rect x={padding} y={y+4} width={chartW} height={rowH-8} fill="#f6f6f6" />
+            <rect x={padding} y={y+4} width={w} height={rowH-8} fill="#e3f2fd" stroke="#9ac1ee" />
+            <text x={padding+6} y={y + rowH/2 + 1} fontSize="11" dominantBaseline="middle" fill="#333">
+              {r.label}
+            </text>
+            <text x={padding + chartW - 6} y={y + rowH/2 + 1} fontSize="11" dominantBaseline="middle" textAnchor="end" fill="#555">
+              {ru(r.value)}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function formatINR(n) {
+  const v = Number(n||0);
+  if (v >= 1e7) return "₹" + (v/1e7).toFixed(1) + "cr";
+  if (v >= 1e5) return "₹" + (v/1e5).toFixed(1) + "L";
+  if (v >= 1e3) return "₹" + (v/1e3).toFixed(1) + "k";
+  return "₹" + v.toFixed(0);
 }
 
 function StatusTag({s}) {

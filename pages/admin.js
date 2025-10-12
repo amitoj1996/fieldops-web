@@ -704,7 +704,7 @@ export default function Admin() {
             To (date)
             <input type="date" value={reportTo} onChange={(e) => setReportTo(e.target.value)} />
           </label>
-          <button onClick={downloadReport}>Download CSV</button>
+          {/* Removed the global "Download CSV" button: CSV is now only in the Reports tab */}
           <span style={{ fontSize: 12, color: "#666" }}>
             These filters apply to Overview/Performance/EoM and KPIs/charts.
           </span>
@@ -1346,7 +1346,7 @@ function ExpensesTab(props) {
                   const ocrDiff = e.editedTotal != null && Number(e.editedTotal) !== Number(e.total);
                   const cat = e.category || "Other";
                   return (
-                    <li key={e.id} style={{ padding: "10px 0", borderBottom: "1px solid #f3f3f3" }}>
+                    <li key={e.id} style={{ padding: "10px 0", borderBottom: "1px solid " + "#f3f3f3" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                         <div>
                           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

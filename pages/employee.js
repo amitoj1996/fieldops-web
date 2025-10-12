@@ -23,7 +23,7 @@ function remainingByCategory(task, expenses) {
   const rem = {Hotel: limits.Hotel||0, Food: limits.Food||0, Travel: limits.Travel||0, Other: limits.Other||0};
   for (const e of expenses||[]) {
     const st = e?.approval?.status;
-    if (st === "REJECTED") continue; // rejected doesn't count toward cap
+    if (st === "REJECTED") continue;
     const cat = e?.category || "Other";
     const amt = Number(e?.editedTotal ?? e?.total ?? 0) || 0;
     if (["PENDING_REVIEW","APPROVED","AUTO_APPROVED", null, ""].includes(st)) {
@@ -49,21 +49,20 @@ export default function Employee() {
   const [rem, setRem] = useState({Hotel:0,Food:0,Travel:0,Other:0});
 
   const [uploading, setUploading] = useState(false);
-  const [draft, setDraft] = useState(null); // new expense draft after OCR
+  const [draft, setDraft] = useState(null);
   const fileRef = useRef(null);
 
   // New expense finalize fields
   const [category, setCategory] = useState("");
   const [editedTotal, setEditedTotal] = useState("");
 
-  // EDIT rejected expense
+  // EDIT rejected expense (no comment now)
   const [editExp, setEditExp] = useState(null);
   const [editCategory, setEditCategory] = useState("");
   const [editAmount, setEditAmount] = useState("");
-  const [editComment, setEditComment] = useState(""); // reply to admin note
   const [savingEdit, setSavingEdit] = useState(false);
 
-  // Load tasks (then filter to mine)
+  // Load tasks
   useEffect(() => {
     (async () => {
       setTasksLoading(true);
@@ -86,7 +85,7 @@ export default function Employee() {
   async function selectTask(t) {
     setSelected(t);
     setDraft(null); setCategory(""); setEditedTotal("");
-    setEditExp(null); setEditCategory(""); setEditAmount(""); setEditComment("");
+    setEditExp(null); setEditCategory(""); setEditAmount(""); setSavingEdit(false);
     try {
       const ex = await fetch(`/api/expenses/byTask?taskId=${encodeURIComponent(t.id)}&tenantId=${tenantId}`).then(r=>r.json());
       const arr = Array.isArray(ex) ? ex : [];
@@ -145,7 +144,6 @@ export default function Employee() {
     const safeName = `${Date.now()}_${f.name.replace(/[^a-zA-Z0-9._-]/g,"-")}`;
     setUploading(true);
     try {
-      // SAS to upload
       const sas = await fetch(`/api/receipts/sas?taskId=${encodeURIComponent(selected.id)}&filename=${encodeURIComponent(safeName)}`).then(r=>r.json());
       if (!sas?.uploadUrl) throw new Error("Could not get upload URL");
 
@@ -184,7 +182,7 @@ export default function Employee() {
       const filename = exp.blobPath.split("/").pop();
       const j = await fetch(`/api/receipts/readSas?taskId=${encodeURIComponent(exp.taskId)}&filename=${encodeURIComponent(filename)}&minutes=5`).then(r=>r.json());
       if (j.readUrl) window.open(j.readUrl, "_blank");
-    } catch (e) {
+    } catch {
       alert("Could not open receipt");
     }
   }
@@ -211,7 +209,6 @@ export default function Employee() {
     const j = await r.json();
     if (!r.ok) return alert(j.error || "Submit failed");
 
-    // refresh
     setDraft(null);
     setCategory("");
     setEditedTotal("");
@@ -224,14 +221,12 @@ export default function Employee() {
     }
   }
 
-  // ----- Edit & Resubmit (for REJECTED expenses) -----
+  // ----- Edit & Resubmit (for REJECTED expenses) — no comment -----
   function beginEdit(e) {
     setEditExp(e);
     setEditCategory(e.category || "");
     const amt = e.editedTotal ?? e.total ?? "";
     setEditAmount(amt);
-    setEditComment("");
-    // keep admin note visible in the edit card
   }
 
   async function submitEdit() {
@@ -245,8 +240,7 @@ export default function Employee() {
         tenantId,
         expenseId: editExp.id,
         category: editCategory,
-        total: amt,
-        comment: editComment || undefined
+        total: amt
       };
       const r = await fetch(`/api/expenses/finalize`, {
         method: "POST",
@@ -259,7 +253,6 @@ export default function Employee() {
       setEditExp(null);
       setEditCategory("");
       setEditAmount("");
-      setEditComment("");
 
       await selectTask(selected);
 
@@ -367,7 +360,7 @@ export default function Employee() {
                 )}
               </div>
 
-              {/* Edit rejected expense */}
+              {/* Edit rejected expense (no comment) */}
               {editExp && (
                 <div style={{border:"2px solid #ffe0e0", background:"#fff8f8", borderRadius:8, padding:12, marginBottom:16}}>
                   <h3 style={{marginTop:0}}>Edit & resubmit</h3>
@@ -390,16 +383,12 @@ export default function Employee() {
                       <input type="number" step="0.01" value={editAmount} onChange={e=>setEditAmount(e.target.value)} />
                     </label>
                   </div>
-                  <label style={{display:"block", marginTop:8}}>Comment to admin (optional)
-                    <textarea rows={3} value={editComment} onChange={e=>setEditComment(e.target.value)} style={{width:"100%"}} placeholder="Explain the changes you made"/>
-                  </label>
                   <div style={{display:"flex", gap:8, marginTop:10}}>
                     <button onClick={submitEdit} disabled={savingEdit}>{savingEdit ? "Saving…" : "Resubmit"}</button>
-                    <button onClick={()=>{ setEditExp(null); setEditCategory(""); setEditAmount(""); setEditComment(""); }}>Cancel</button>
+                    <button onClick={()=>{ setEditExp(null); setEditCategory(""); setEditAmount(""); }}>Cancel</button>
                   </div>
                   <div style={{fontSize:12, color:"#666", marginTop:6}}>
                     After resubmitting, this expense will be re-evaluated against the <em>remaining</em> budget for its category.
-                    If it fits, it auto-approves; if not, it goes back to admin for review.
                   </div>
                 </div>
               )}

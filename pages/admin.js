@@ -1,7 +1,6 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 function ru(n){ return n==null ? "—" : `₹${Number(n).toLocaleString("en-IN",{maximumFractionDigits:2})}`; }
-
 function toIsoFromLocal(dateStr, timeStr) {
   if (!dateStr && !timeStr) return null;
   if (!dateStr) return null;
@@ -15,10 +14,18 @@ function toIsoFromLocal(dateStr, timeStr) {
 export default function Admin() {
   const [tenantId] = useState("default");
 
+  // Catalog
+  const [products, setProducts] = useState([]);
+  const [pName, setPName] = useState("");
+  const [pSku, setPSku] = useState("");
+  const [pPrice, setPPrice] = useState("");
+
+  // Task state
   const [tasks, setTasks] = useState([]);
   const [taskTitleById, setTaskTitleById] = useState({});
   const [selected, setSelected] = useState(null);
 
+  // Create form
   const [title, setTitle] = useState("");
   const [assignee, setAssignee] = useState("");
   const [slaStartDate, setSlaStartDate] = useState("");
@@ -26,13 +33,24 @@ export default function Admin() {
   const [slaEndDate, setSlaEndDate] = useState("");
   const [slaEndTime, setSlaEndTime] = useState("");
 
+  // Limits + details
   const [limits, setLimits] = useState({Hotel:1000, Food:1000, Travel:1000, Other:1000});
   const [expenses, setExpenses] = useState([]);
   const [events, setEvents] = useState([]);
 
+  // Pending approval queue
   const [pending, setPending] = useState([]);
-  const [note, setNote] = useState({}); // expenseId -> note
+  const [note, setNote] = useState({}); // expenseId -> note string
 
+  // Task items (staging for create)
+  const [chosenProductId, setChosenProductId] = useState("");
+  const [chosenQty, setChosenQty] = useState(1);
+  const [taskItems, setTaskItems] = useState([]); // {productId, name, qty, unitPrice}
+
+  async function loadProducts() {
+    const r = await fetch(`/api/products`).then(r=>r.json());
+    setProducts(Array.isArray(r) ? r : []);
+  }
   async function loadTasks() {
     const j = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
     const arr = Array.isArray(j) ? j : [];
@@ -44,11 +62,12 @@ export default function Admin() {
     const j = await fetch(`/api/expenses/pending?tenantId=${tenantId}`).then(r=>r.json());
     setPending(Array.isArray(j) ? j : []);
   }
-  useEffect(()=>{ loadTasks(); loadPending(); }, []);
+
+  useEffect(()=>{ loadProducts(); loadTasks(); loadPending(); }, []);
 
   async function selectTask(t) {
     setSelected(t);
-    setLimits(t.expenseLimits || {Hotel:1000, Food:1000, Other:1000, Travel:1000});
+    setLimits(t.expenseLimits || {Hotel:1000, Food:1000, Travel:1000, Other:1000});
     const ex = await fetch(`/api/expenses/byTask?taskId=${t.id}&tenantId=${tenantId}`).then(r=>r.json());
     setExpenses(Array.isArray(ex)?ex:[]);
     const ev = await fetch(`/api/tasks/events?taskId=${t.id}&tenantId=${tenantId}`).then(r=>r.json());
@@ -69,16 +88,69 @@ export default function Admin() {
     await selectTask(j);
   }
 
+  // Catalog: create product
+  async function createProduct() {
+    if (!pName.trim()) return alert("Name required");
+    const body = { tenantId, name: pName.trim(), sku: pSku.trim() || undefined, unitPrice: pPrice ? Number(pPrice) : undefined, docType:"Product" };
+    const r = await fetch(`/api/products`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok) return alert(j.error || "Create product failed");
+    setPName(""); setPSku(""); setPPrice("");
+    await loadProducts();
+  }
+
+  // Create task with items
+  function addItem() {
+    if (!chosenProductId) return;
+    const p = products.find(x=>x.id===chosenProductId);
+    if (!p) return;
+    const qty = Math.max(1, Number(chosenQty || 1));
+    // merge if same product already added
+    setTaskItems(items=>{
+      const i = items.findIndex(it=>it.productId===p.id);
+      if (i>=0) {
+        const copy = [...items];
+        copy[i] = {...copy[i], qty: copy[i].qty + qty};
+        return copy;
+      }
+      return [...items, { productId: p.id, name: p.name, sku: p.sku, qty, unitPrice: p.unitPrice }];
+    });
+    setChosenQty(1);
+  }
+  function removeItem(pid) {
+    setTaskItems(items=> items.filter(it=>it.productId!==pid));
+  }
+
   async function createTask() {
     if (!title) return alert("Title required");
     const slaStartISO = toIsoFromLocal(slaStartDate, slaStartTime);
     const slaEndISO   = toIsoFromLocal(slaEndDate, slaEndTime);
-    const body = { tenantId, title, assignee, slaStart: slaStartISO, slaEnd: slaEndISO, type: "Data collection", status: "ASSIGNED", expenseLimits: limits };
+
+    const body = {
+      tenantId, title, assignee,
+      slaStart: slaStartISO,
+      slaEnd:   slaEndISO,
+      type: "Data collection",
+      status: "ASSIGNED",
+      expenseLimits: limits,
+      items: taskItems.map(it => ({
+        productId: it.productId, name: it.name, sku: it.sku, qty: it.qty,
+        unitPrice: it.unitPrice
+      }))
+    };
+
     const r = await fetch(`/api/tasks`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
     const j = await r.json();
     if (!r.ok) return alert(j.error||"create failed");
-    setTitle(""); setAssignee(""); setSlaStartDate(""); setSlaStartTime(""); setSlaEndDate(""); setSlaEndTime("");
-    await loadTasks(); await selectTask(j);
+
+    // reset form
+    setTitle(""); setAssignee("");
+    setSlaStartDate(""); setSlaStartTime("");
+    setSlaEndDate(""); setSlaEndTime("");
+    setTaskItems([]);
+
+    await loadTasks();
+    await selectTask(j);
   }
 
   async function openReceiptFor(exp) {
@@ -107,8 +179,10 @@ export default function Admin() {
     }
   }
 
-  const pendingSorted = useMemo(()=>{
-    const arr = [...pending]; arr.sort((a,b)=> new Date(a.createdAt) - new Date(b.createdAt)); return arr;
+  const pendingSorted = useMemo(()=> {
+    const arr = [...pending];
+    arr.sort((a,b)=> new Date(a.createdAt) - new Date(b.createdAt));
+    return arr;
   }, [pending]);
 
   return (
@@ -136,11 +210,17 @@ export default function Admin() {
                   </div>
                   <div>Category: <strong>{e.category || "—"}</strong></div>
                   <div>Amount: <strong>{ru(e.editedTotal ?? e.total)}</strong></div>
-                  <div style={{display:"flex", gap:6}}><button onClick={()=>openReceiptFor(e)}>Open receipt</button></div>
+                  <div style={{display:"flex", gap:6}}>
+                    <button onClick={()=>openReceiptFor(e)}>Open receipt</button>
+                  </div>
                 </div>
 
                 <div style={{display:"grid", gridTemplateColumns:"1fr auto auto", gap:8, marginTop:8}}>
-                  <input placeholder="note (required to reject)" value={note[e.id] || ""} onChange={ev=>setNote(n => ({...n, [e.id]: ev.target.value}))}/>
+                  <input
+                    placeholder="note (required to reject)"
+                    value={note[e.id] || ""}
+                    onChange={ev=>setNote(n => ({...n, [e.id]: ev.target.value}))}
+                  />
                   <button onClick={()=>decide(e.id, "approve")}>Approve</button>
                   <button onClick={()=>decide(e.id, "reject")}>Reject</button>
                 </div>
@@ -154,28 +234,119 @@ export default function Admin() {
         )}
       </section>
 
-      {/* Create + manage tasks */}
+      {/* Product catalog */}
+      <section style={{border:"1px solid #ddd", borderRadius:8, padding:12, marginBottom:16}}>
+        <h2>Product catalog</h2>
+        <div style={{display:"grid", gridTemplateColumns:"2fr 1fr 1fr auto", gap:8, alignItems:"end", maxWidth:800}}>
+          <label>Name
+            <input value={pName} onChange={e=>setPName(e.target.value)} placeholder="e.g., Model X Router"/>
+          </label>
+          <label>SKU
+            <input value={pSku} onChange={e=>setPSku(e.target.value)} placeholder="e.g., MXR-200"/>
+          </label>
+          <label>Unit price (₹)
+            <input type="number" step="0.01" value={pPrice} onChange={e=>setPPrice(e.target.value)} placeholder="optional"/>
+          </label>
+          <button onClick={createProduct}>Add product</button>
+        </div>
+
+        <div style={{marginTop:10}}>
+          {products.length === 0 ? <p>No products yet.</p> : (
+            <ul>
+              {products.map(p=>(
+                <li key={p.id} style={{margin:"4px 0"}}>
+                  <strong>{p.name}</strong> {p.sku ? `• ${p.sku}` : ""} {p.unitPrice ? `• ${ru(p.unitPrice)}` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      {/* Create task */}
       <section style={{border:"1px solid #ddd", borderRadius:8, padding:12, marginBottom:16}}>
         <h2>Create task</h2>
+
         <div style={{display:"grid", gridTemplateColumns:"2fr 1fr", gap:8, alignItems:"end", marginBottom:10}}>
-          <label>Title<input value={title} onChange={e=>setTitle(e.target.value)} placeholder="e.g., Visit Site A"/></label>
-          <label>Assignee<input value={assignee} onChange={e=>setAssignee(e.target.value)} placeholder="emp-001"/></label>
+          <label>Title
+            <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="e.g., Visit Site A"/>
+          </label>
+          <label>Assignee
+            <input value={assignee} onChange={e=>setAssignee(e.target.value)} placeholder="emp-001"/>
+          </label>
         </div>
-        <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8}}>
-          <label>SLA start (date)<input type="date" value={slaStartDate} onChange={e=>setSlaStartDate(e.target.value)}/></label>
-          <label>SLA start (time)<input type="time" step="60" value={slaStartTime} onChange={e=>setSlaStartTime(e.target.value)}/></label>
-          <label>SLA end (date)<input type="date" value={slaEndDate} onChange={e=>setSlaEndDate(e.target.value)}/></label>
-          <label>SLA end (time)<input type="time" step="60" value={slaEndTime} onChange={e=>setSlaEndTime(e.target.value)}/></label>
+
+        {/* SLA rows with separate Date + Time */}
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:8, alignItems:"end"}}>
+          <label>SLA start (date)
+            <input type="date" value={slaStartDate} onChange={e=>setSlaStartDate(e.target.value)} />
+          </label>
+          <label>SLA start (time)
+            <input type="time" step="60" value={slaStartTime} onChange={e=>setSlaStartTime(e.target.value)} />
+          </label>
+          <label>SLA end (date)
+            <input type="date" value={slaEndDate} onChange={e=>setSlaEndDate(e.target.value)} />
+          </label>
+          <label>SLA end (time)
+            <input type="time" step="60" value={slaEndTime} onChange={e=>setSlaEndTime(e.target.value)} />
+          </label>
         </div>
+
+        {/* Limits */}
         <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, maxWidth:720, marginTop:10}}>
           {["Hotel","Food","Travel","Other"].map(k=>(
-            <label key={k}>{k}<input type="number" step="1" value={limits[k]??0} onChange={e=>setLimits(L=>({...L,[k]:Number(e.target.value||0)}))}/></label>
+            <label key={k}>{k}
+              <input type="number" step="1" value={limits[k]??0} onChange={e=>upd(k, e.target.value)}/>
+            </label>
           ))}
         </div>
-        <div style={{marginTop:10, fontSize:12, color:"#666"}}>Times are saved in UTC ISO.</div>
+
+        {/* Attach products */}
+        <div style={{borderTop:"1px dashed #ddd", marginTop:12, paddingTop:12}}>
+          <h3>Attach products</h3>
+          <div style={{display:"grid", gridTemplateColumns:"2fr 1fr auto", gap:8, alignItems:"end", maxWidth:600}}>
+            <label>Product
+              <select value={chosenProductId} onChange={e=>setChosenProductId(e.target.value)}>
+                <option value="">— Select product —</option>
+                {products.map(p=><option key={p.id} value={p.id}>{p.name} {p.sku ? `• ${p.sku}` : ""}</option>)}
+              </select>
+            </label>
+            <label>Qty
+              <input type="number" min="1" step="1" value={chosenQty} onChange={e=>setChosenQty(e.target.value)} />
+            </label>
+            <button type="button" onClick={addItem}>Add</button>
+          </div>
+
+          {taskItems.length>0 && (
+            <table style={{marginTop:10, borderCollapse:"collapse", minWidth:500}}>
+              <thead><tr>
+                <th style={{borderBottom:"1px solid #ddd", textAlign:"left", padding:"6px"}}>Product</th>
+                <th style={{borderBottom:"1px solid #ddd", textAlign:"left", padding:"6px"}}>SKU</th>
+                <th style={{borderBottom:"1px solid #ddd", textAlign:"right", padding:"6px"}}>Qty</th>
+                <th></th>
+              </tr></thead>
+              <tbody>
+                {taskItems.map(it=>(
+                  <tr key={it.productId}>
+                    <td style={{borderBottom:"1px solid #eee", padding:"6px"}}>{it.name}</td>
+                    <td style={{borderBottom:"1px solid #eee", padding:"6px"}}>{it.sku || "—"}</td>
+                    <td style={{borderBottom:"1px solid #eee", padding:"6px", textAlign:"right"}}>{it.qty}</td>
+                    <td style={{borderBottom:"1px solid #eee", padding:"6px"}}><button onClick={()=>removeItem(it.productId)}>Remove</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div style={{marginTop:10, fontSize:12, color:"#666"}}>
+          Times are interpreted in your local timezone and saved as ISO (UTC).
+        </div>
+
         <button onClick={createTask} style={{marginTop:10}}>Create task</button>
       </section>
 
+      {/* Lists */}
       <section style={{display:"grid", gridTemplateColumns:"1fr 2fr", gap:16}}>
         <div>
           <h2>Tasks</h2>
@@ -198,10 +369,21 @@ export default function Admin() {
               <h2>Limits for: <span style={{fontWeight:600}}>{selected.title || selected.id}</span></h2>
               <div style={{display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:8, maxWidth:720}}>
                 {["Hotel","Food","Travel","Other"].map(k=>(
-                  <label key={k}>{k}<input type="number" step="1" value={limits[k] ?? 0} onChange={e=>setLimits(L=>({...L,[k]:Number(e.target.value||0)}))} /></label>
+                  <label key={k}>{k}
+                    <input type="number" step="1" value={limits[k] ?? 0} onChange={e=>upd(k, e.target.value)} />
+                  </label>
                 ))}
               </div>
               <button onClick={saveLimits} style={{marginTop:10}}>Save limits</button>
+
+              <h3 style={{marginTop:24}}>Assigned products</h3>
+              {Array.isArray(selected.items) && selected.items.length>0 ? (
+                <ul>
+                  {selected.items.map(it=>(
+                    <li key={it.productId}>{it.name} {it.sku ? `• ${it.sku}`:""} — Qty: <strong>{it.qty}</strong></li>
+                  ))}
+                </ul>
+              ) : <p>None.</p>}
 
               <h3 style={{marginTop:24}}>Timeline</h3>
               <ul>

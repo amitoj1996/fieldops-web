@@ -1663,7 +1663,6 @@ function InteractiveGroupedBars({ categories, series, height = 240, width = 560,
   const gapInner = 10;
   const groupW = series.length * barW + gapInner * (series.length - 1);
   const gapOuter = 20;
-  theadjust; // no-op to preserve earlier reference? NO! removing would fix old error. Keep empty line instead.
 
   const totalW = Math.max(width, padding * 2 + categories.length * groupW + (categories.length - 1) * gapOuter);
   const h = height;

@@ -283,7 +283,7 @@ export default function Admin() {
     return { rows, winner, topN, lowN, n };
   }, [tasksInRange, expensesInRange, tasksById, eomN]);
 
-  /* ---------- PERFORMANCE (OPI) with adjustable N) ---------- */
+  /* ---------- PERFORMANCE (OPI) with adjustable N ---------- */
   const [opiN, setOpiN] = useState(10);
   function percentile(values, v) {
     const arr = (values || []).slice().sort((a, b) => a - b);
@@ -384,7 +384,6 @@ export default function Admin() {
         const pUnits = percentile(unitsArr, r.metrics.unitsPer30d);
         const pProd = (pTasks + pUnits) / 2;
 
-        // OPI weights without "quality" component:
         const score = Math.round(
           0.35 * pOnTime + 0.25 * pBreachOK + 0.25 * pBudget + 0.15 * pProd
         );
@@ -414,6 +413,30 @@ export default function Admin() {
       setReportTo(fmtYMDUTC(last));
     }
   }, [tab]);
+
+  /* ---------- NEW: Quick List Modal state ---------- */
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickTitle, setQuickTitle] = useState("");
+  const [quickRows, setQuickRows] = useState([]); // array of tasks
+
+  function openQuickList(kind) {
+    if (kind === "open") {
+      const rows = tasksInRange.filter((t) => (t.status || "ASSIGNED") !== "COMPLETED");
+      setQuickTitle("Open tasks");
+      setQuickRows(rows);
+      setQuickOpen(true);
+    } else if (kind === "completed") {
+      const rows = tasksInRange.filter((t) => (t.status || "") === "COMPLETED");
+      setQuickTitle("Completed tasks");
+      setQuickRows(rows);
+      setQuickOpen(true);
+    }
+  }
+  function closeQuick() {
+    setQuickOpen(false);
+    setQuickTitle("");
+    setQuickRows([]);
+  }
 
   /* Create task */
   const [newTask, setNewTask] = useState({
@@ -704,7 +727,6 @@ export default function Admin() {
             To (date)
             <input type="date" value={reportTo} onChange={(e) => setReportTo(e.target.value)} />
           </label>
-          {/* Removed the global "Download CSV" button: CSV is now only in the Reports tab */}
           <span style={{ fontSize: 12, color: "#666" }}>
             These filters apply to Overview/Performance/EoM and KPIs/charts.
           </span>
@@ -745,7 +767,7 @@ export default function Admin() {
         <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 18 }}>
           <h2 style={{ marginTop: 0 }}>Overview</h2>
 
-          {/* KPI cards */}
+          {/* KPI cards (clickable for open/completed lists) */}
           <div
             style={{
               display: "grid",
@@ -754,8 +776,8 @@ export default function Admin() {
               marginBottom: 12
             }}
           >
-            <KPI title="Open tasks" value={kpis.open} />
-            <KPI title="Completed tasks" value={kpis.completed} />
+            <KPI title="Open tasks" value={kpis.open} onClick={() => openQuickList("open")} />
+            <KPI title="Completed tasks" value={kpis.completed} onClick={() => openQuickList("completed")} />
             <KPI title="SLA breach rate" value={`${kpis.breachRate.toFixed(1)}%`} />
           </div>
 
@@ -894,16 +916,41 @@ export default function Admin() {
           deleting={deleting}
         />
       )}
+
+      {/* NEW: Quick List Modal */}
+      {quickOpen && (
+        <QuickListModal
+          title={quickTitle}
+          rows={quickRows}
+          onClose={closeQuick}
+          onEdit={openEdit}
+          onDelete={openDelete}
+        />
+      )}
     </main>
   );
 }
 
 /* ---------- Small UI helpers ---------- */
-function KPI({ title, value }) {
+function KPI({ title, value, onClick }) {
+  const clickable = typeof onClick === "function";
   return (
-    <div style={{ border: "1px solid #eee", borderRadius: 8, padding: "10px 12px" }}>
+    <div
+      onClick={onClick}
+      style={{
+        border: "1px solid #eee",
+        borderRadius: 8,
+        padding: "10px 12px",
+        cursor: clickable ? "pointer" : "default",
+        transition: "transform 120ms ease, background 120ms ease",
+        background: clickable ? "#fcfcff" : "#fff"
+      }}
+      onMouseEnter={(e) => clickable && (e.currentTarget.style.background = "#f6f9ff")}
+      onMouseLeave={(e) => clickable && (e.currentTarget.style.background = "#fcfcff")}
+    >
       <div style={{ fontSize: 12, color: "#666" }}>{title}</div>
       <div style={{ fontSize: 22, fontWeight: 700, marginTop: 2 }}>{value}</div>
+      {clickable && <div style={{ fontSize: 11, color: "#8aa", marginTop: 4 }}>Click to view</div>}
     </div>
   );
 }
@@ -1616,6 +1663,8 @@ function InteractiveGroupedBars({ categories, series, height = 240, width = 560,
   const gapInner = 10;
   const groupW = series.length * barW + gapInner * (series.length - 1);
   const gapOuter = 20;
+  theadjust; // no-op to preserve earlier reference? NO! removing would fix old error. Keep empty line instead.
+
   const totalW = Math.max(width, padding * 2 + categories.length * groupW + (categories.length - 1) * gapOuter);
   const h = height;
   const chartH = h - padding * 1.6;
@@ -2017,6 +2066,79 @@ function DeleteModal({ deleteTarget, cascadeDelete, setCascadeDelete, closeDelet
   );
 }
 
-/* ---------- Status pill ---------- */
-function StatusTagInner() { return null; } // placeholder to avoid duplicate export
-/* ------------------ end ------------------ */
+/* ---------- NEW: Quick List Modal ---------- */
+function QuickListModal({ title, rows, onClose, onEdit, onDelete }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.35)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "20px",
+        zIndex: 1200
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: 10,
+          padding: 16,
+          width: "min(900px, 96vw)",
+          maxHeight: "90vh",
+          overflow: "auto",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.15)"
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h2 style={{ margin: 0 }}>{title}</h2>
+          <button onClick={onClose}>Close</button>
+        </div>
+        {(!rows || rows.length === 0) ? (
+          <p style={{ color: "#666", marginTop: 12 }}>No tasks in this list.</p>
+        ) : (
+          <div style={{ marginTop: 12, overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+              <thead>
+                <tr style={{ textAlign: "left", borderBottom: "1px solid #eee" }}>
+                  <th style={{ padding: "8px" }}>Title</th>
+                  <th style={{ padding: "8px" }}>Assignee</th>
+                  <th style={{ padding: "8px" }}>Type</th>
+                  <th style={{ padding: "8px" }}>SLA</th>
+                  <th style={{ padding: "8px" }} />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((t) => (
+                  <tr key={t.id} style={{ borderBottom: "1px solid #f4f4f4" }}>
+                    <td style={{ padding: "8px" }}>{t.title || t.id}</td>
+                    <td style={{ padding: "8px" }}>{t.assignee || "—"}</td>
+                    <td style={{ padding: "8px" }}>{t.type || "—"}</td>
+                    <td style={{ padding: "8px" }}>
+                      {(t.slaStart ? new Date(t.slaStart).toLocaleString() : "—")} →{" "}
+                      {t.slaEnd ? new Date(t.slaEnd).toLocaleString() : "—"}
+                    </td>
+                    <td style={{ padding: "8px", display: "flex", gap: 8 }}>
+                      <button onClick={() => onEdit(t)}>Edit</button>
+                      <button onClick={() => onDelete(t)}>Delete</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ fontSize: 12, color: "#666", marginTop: 8 }}>
+              Showing {rows.length} task{rows.length === 1 ? "" : "s"} in current date range.
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Status pill placeholder to avoid duplicate export in some bundlers ---------- */
+function StatusTagInner() { return null; }

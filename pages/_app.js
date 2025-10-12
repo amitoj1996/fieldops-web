@@ -27,7 +27,7 @@ function Nav() {
                  fontFamily:"-apple-system, system-ui, Segoe UI, Roboto", position:"sticky", top:0, background:"#fff", zIndex:10}}>
       <a href="/" style={{fontWeight:700, textDecoration:"none"}}>FieldOps</a>
       <a href="/employee">Employee</a>
-      <a href="/admin">Admin</a>
+      {isAdmin && <a href="/admin">Admin</a>}
       <div style={{marginLeft:"auto"}}/>
       {me ? (
         <>
@@ -36,10 +36,7 @@ function Nav() {
           <a href="/.auth/logout?post_logout_redirect_uri=/" style={{textDecoration:"none"}}>Logout</a>
         </>
       ) : (
-        <>
-          {/* Entra External ID (customers) via SWA provider 'aad' */}
-          <a href="/.auth/login/aad?post_login_redirect_uri=/employee" style={{textDecoration:"none"}}>Login</a>
-        </>
+        <a href="/.auth/login/aad?post_login_redirect_uri=/after-login" style={{textDecoration:"none"}}>Login</a>
       )}
     </nav>
   );

@@ -100,13 +100,54 @@ def _make_blob_urls(task_id: str, filename: str, *, for_read=False, for_write=Fa
 def hello(req: func.HttpRequest) -> func.HttpResponse:
     return func.HttpResponse("Hello from Python Functions, world!", status_code=200)
 
-# ---- Tasks (create/list + limits)
+# ---- Products (catalog) ----
+@app.route(route="products", methods=["GET"])
+def products_list(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        tenant = req.params.get("tenantId","default")
+        c = _tasks_container()
+        q = "SELECT * FROM c WHERE c.docType='Product' AND c.tenantId=@t ORDER BY c.createdAt DESC"
+        items = list(c.query_items(q, parameters=[{"name":"@t","value":tenant}], enable_cross_partition_query=True))
+        return func.HttpResponse(json.dumps(items), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error":str(e)}), mimetype="application/json", status_code=500)
+
+@app.route(route="products", methods=["POST"])
+def products_create(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        data = req.get_json()
+        tenant = data.get("tenantId","default")
+        name = (data.get("name") or "").strip()
+        if not name:
+            return func.HttpResponse(json.dumps({"error":"name required"}), mimetype="application/json", status_code=400)
+        sku = (data.get("sku") or "").strip()
+        unit = (data.get("unit") or "unit").strip()
+        price = data.get("price", None)
+
+        c = _tasks_container()
+        item = {
+            "id": data.get("id") or str(uuid.uuid4()),
+            "docType": "Product",
+            "tenantId": tenant,
+            "name": name,
+            "sku": sku or None,
+            "unit": unit or "unit",
+            "price": float(price) if price not in (None,"") else None,
+            "createdAt": _now_iso()
+        }
+        c.create_item(item)
+        return func.HttpResponse(json.dumps(item), mimetype="application/json", status_code=201)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error":str(e)}), mimetype="application/json", status_code=500)
+
+# ---- Tasks (create/list + limits + items)
 @app.route(route="tasks", methods=["POST"])
 def create_task(req: func.HttpRequest) -> func.HttpResponse:
     try:
         data = req.get_json()
         c = _tasks_container()
         limits = data.get("expenseLimits") or DEFAULT_LIMITS.copy()
+        items = data.get("items") or []  # [{productId,name,sku,qty,unit,price}]
         item = {
             "id": data.get("id") or str(uuid.uuid4()),
             "tenantId": data.get("tenantId", "default"),
@@ -117,6 +158,7 @@ def create_task(req: func.HttpRequest) -> func.HttpResponse:
             "slaEnd": data.get("slaEnd"),
             "status": data.get("status", "ASSIGNED"),
             "expenseLimits": limits,
+            "items": items,
             "createdAt": _now_iso(),
             "docType": "Task"
         }
@@ -151,6 +193,39 @@ def update_task_limits(req: func.HttpRequest) -> func.HttpResponse:
         item["expenseLimits"] = limits
         _save_task(item)
         return func.HttpResponse(json.dumps(item), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+@app.route(route="tasks/items", methods=["PUT"])
+def update_task_items(req: func.HttpRequest) -> func.HttpResponse:
+    """Replace the task's items array with the provided list."""
+    try:
+        data = req.get_json()
+        task_id = data.get("taskId")
+        tenant  = data.get("tenantId","default")
+        items   = data.get("items")
+        if not task_id or not isinstance(items, list):
+            return func.HttpResponse(json.dumps({"error":"taskId and items[] required"}),
+                                     mimetype="application/json", status_code=400)
+        c = _tasks_container()
+        task = c.read_item(item=task_id, partition_key=tenant)
+        task["items"] = items
+        _save_task(task)
+        return func.HttpResponse(json.dumps(task), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+@app.route(route="tasks/items", methods=["GET"])
+def get_task_items(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        tenant = req.params.get("tenantId","default")
+        task_id = req.params.get("taskId")
+        if not task_id:
+            return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
+        task = _get_task(tenant, task_id)
+        if not task:
+            return func.HttpResponse(json.dumps({"error":"task not found"}), mimetype="application/json", status_code=404)
+        return func.HttpResponse(json.dumps(task.get("items") or []), mimetype="application/json", status_code=200)
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
@@ -294,7 +369,7 @@ def receipts_read_sas(req: func.HttpRequest) -> func.HttpResponse:
         filename = req.params.get("filename")
         minutes  = int(req.params.get("minutes", "5"))
         if not task_id or not filename:
-            return func.HttpResponse(json.dumps({"error":"taskId and filename are required"}),
+            return func.HttpResponse(json.dumps({"error":"taskId and filename are required"]),
                                      mimetype="application/json", status_code=400)
         blob_url, read_url = _make_blob_urls(task_id, filename, for_read=True, minutes=minutes)
         return func.HttpResponse(json.dumps({"blobUrl": blob_url, "readUrl": read_url}),
@@ -479,7 +554,6 @@ def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
               return func.HttpResponse(json.dumps({"error":"total must be a number"}), mimetype="application/json", status_code=400)
           expense["editedTotal"] = edited_total
       else:
-          # Keep previously chosen amount (editedTotal if exists, else OCR total)
           edited_total = float(prev_edited if prev_edited is not None else (original_total or 0))
 
       current_amount = float(edited_total or 0)

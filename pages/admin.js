@@ -40,7 +40,7 @@ export default function Admin() {
   const me = useAuth();
   const [tenantId] = useState("default");
 
-  // --- Reports ---
+  // --- Reports (shared date filters for dashboard too) ---
   const [reportFrom, setReportFrom] = useState("");
   const [reportTo, setReportTo] = useState("");
   function downloadReport() {
@@ -49,6 +49,15 @@ export default function Admin() {
     if (reportTo)   url += `&toDate=${reportTo}`;
     window.open(url, "_blank", "noopener");
   }
+  const dFrom = useMemo(()=> reportFrom ? new Date(`${reportFrom}T00:00:00Z`) : null, [reportFrom]);
+  const dTo   = useMemo(()=> reportTo   ? new Date(`${reportTo}T23:59:59.999Z`) : null, [reportTo]);
+  const inRange = (iso) => {
+    if (!iso) return !dFrom && !dTo;
+    const dt = new Date(iso);
+    if (dFrom && dt < dFrom) return false;
+    if (dTo && dt > dTo) return false;
+    return true;
+  };
 
   // Tasks + lookup
   const [tasks, setTasks] = useState([]);
@@ -220,6 +229,59 @@ export default function Admin() {
     alert("Task created");
   }
 
+  // ---- Dashboard calculations (createdAt-based, same as CSV) ----
+  const tasksInRange = useMemo(() => (tasks||[]).filter(t => inRange(t.createdAt)), [tasks, dFrom, dTo]);
+  const expensesInRange = useMemo(() => {
+    const allowed = new Set(tasksInRange.map(t => t.id));
+    return (expenses||[]).filter(e => allowed.has(e.taskId) && inRange(e.createdAt));
+  }, [expenses, tasksInRange, dFrom, dTo]);
+
+  const kpis = useMemo(() => {
+    // Open vs Completed
+    const open = tasksInRange.filter(t => (t.status || "ASSIGNED") !== "COMPLETED").length;
+    const completedList = tasksInRange.filter(t => (t.status || "") === "COMPLETED");
+    const completed = completedList.length;
+    // SLA breach rate among completed
+    const breached = completedList.filter(t => !!t.slaBreached).length;
+    const breachRate = completed ? (breached / completed) * 100 : 0;
+
+    // Budget sums by category (from tasks)
+    const catKeys = ["Hotel","Food","Travel","Other"];
+    const budget = { Hotel:0, Food:0, Travel:0, Other:0 };
+    for (const t of tasksInRange) {
+      const el = t.expenseLimits || {};
+      for (const k of catKeys) budget[k] += Number(el[k] || 0);
+    }
+
+    // Spend by category: include APPROVED, AUTO_APPROVED, PENDING_REVIEW (exclude REJECTED)
+    const spend = { Hotel:0, Food:0, Travel:0, Other:0 };
+    for (const e of expensesInRange) {
+      const st = (e.approval?.status) || "";
+      if (st === "REJECTED") continue;
+      const amt = Number(e.editedTotal ?? e.total ?? 0) || 0;
+      const cat = (e.category || "Other");
+      if (spend[cat] == null) spend[cat] = 0;
+      spend[cat] += amt;
+    }
+
+    // Top spenders (sum non-rejected)
+    const perUser = {};
+    for (const e of expensesInRange) {
+      const st = (e.approval?.status) || "";
+      if (st === "REJECTED") continue;
+      const t = tasksById[e.taskId] || {};
+      const user = (t.assignee || "—").toLowerCase();
+      const amt = Number(e.editedTotal ?? e.total ?? 0) || 0;
+      perUser[user] = (perUser[user] || 0) + amt;
+    }
+    const top = Object.entries(perUser)
+      .map(([assignee, total]) => ({ assignee, total }))
+      .sort((a,b)=> b.total - a.total)
+      .slice(0, 5);
+
+    return { open, completed, breachRate, budget, spend, top };
+  }, [tasksInRange, expensesInRange, tasksById]);
+
   // ---- Tasks list + Edit/Delete flow ----
   const [taskSearch, setTaskSearch] = useState("");
   const filteredTasks = useMemo(() => {
@@ -366,6 +428,73 @@ export default function Admin() {
       <h1>Admin</h1>
       <div style={{marginBottom:12, color:"#444"}}>Signed in as: <strong>{me?.userDetails || "—"}</strong></div>
 
+      {/* DASHBOARD */}
+      <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
+        <h2 style={{marginTop:0}}>Dashboard</h2>
+
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, maxWidth:600, alignItems:"end", marginBottom:12}}>
+          <label>From (date)
+            <input type="date" value={reportFrom} onChange={e=>setReportFrom(e.target.value)} />
+          </label>
+          <label>To (date)
+            <input type="date" value={reportTo} onChange={e=>setReportTo(e.target.value)} />
+          </label>
+        </div>
+
+        {/* KPI cards */}
+        <div style={{display:"grid", gridTemplateColumns:"repeat(3, minmax(160px, 1fr))", gap:12, marginBottom:12}}>
+          <KPI title="Open tasks" value={kpis.open} />
+          <KPI title="Completed tasks" value={kpis.completed} />
+          <KPI title="SLA breach rate" value={`${kpis.breachRate.toFixed(1)}%`} />
+        </div>
+
+        {/* Spend vs Budget */}
+        <div style={{marginTop:8}}>
+          <h3 style={{margin:"8px 0"}}>Spend vs Budget (by category)</h3>
+          <div style={{overflowX:"auto"}}>
+            <table style={{borderCollapse:"collapse", minWidth:520}}>
+              <thead>
+                <tr style={{textAlign:"left", borderBottom:"1px solid #eee"}}>
+                  <th style={{padding:"6px 8px"}}>Category</th>
+                  <th style={{padding:"6px 8px"}}>Budget</th>
+                  <th style={{padding:"6px 8px"}}>Spend</th>
+                  <th style={{padding:"6px 8px"}}>% Used</th>
+                </tr>
+              </thead>
+              <tbody>
+                {["Hotel","Food","Travel","Other"].map(k=>{
+                  const b = Number(kpis.budget[k] || 0);
+                  const s = Number(kpis.spend[k] || 0);
+                  const pct = b > 0 ? Math.min(100, (s/b)*100) : (s>0 ? 100 : 0);
+                  return (
+                    <tr key={k} style={{borderBottom:"1px solid #f5f5f5"}}>
+                      <td style={{padding:"6px 8px"}}>{k}</td>
+                      <td style={{padding:"6px 8px"}}>{ru(b)}</td>
+                      <td style={{padding:"6px 8px"}}>{ru(s)}</td>
+                      <td style={{padding:"6px 8px"}}>{pct.toFixed(1)}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Top spenders */}
+        <div style={{marginTop:12}}>
+          <h3 style={{margin:"8px 0"}}>Top spenders</h3>
+          {kpis.top.length === 0 ? <div style={{color:"#666"}}>No expenses in this range.</div> : (
+            <ol style={{margin:"6px 0 0 18px", padding:0}}>
+              {kpis.top.map(row => (
+                <li key={row.assignee} style={{marginBottom:4}}>
+                  <strong>{row.assignee || "—"}</strong> — {ru(row.total)}
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      </section>
+
       {/* Reports */}
       <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
         <h2 style={{marginTop:0}}>Reports</h2>
@@ -379,7 +508,7 @@ export default function Admin() {
           <button onClick={downloadReport}>Download CSV</button>
         </div>
         <div style={{fontSize:12, color:"#666", marginTop:6}}>
-          Leave fields blank for an all-time report. “To” is inclusive in the CSV (we handle it server-side).
+          Leave fields blank for an all-time report. “To” is inclusive here (CSV logic matches).
         </div>
       </section>
 
@@ -796,6 +925,15 @@ export default function Admin() {
         </div>
       )}
     </main>
+  );
+}
+
+function KPI({title, value}) {
+  return (
+    <div style={{border:"1px solid #eee", borderRadius:8, padding:"10px 12px"}}>
+      <div style={{fontSize:12, color:"#666"}}>{title}</div>
+      <div style={{fontSize:22, fontWeight:700, marginTop:2}}>{value}</div>
+    </div>
   );
 }
 

@@ -1,3 +1,8 @@
 node_modules
 .next
 out
+# macOS
+.DS_Store
+
+# local test files
+/receipt_test.*

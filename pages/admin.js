@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 
 function useAuth() {
   const [me, setMe] = useState(null);
@@ -283,20 +283,29 @@ export default function Admin() {
   }, [tasksInRange, expensesInRange, tasksById]);
 
   // ---- Employee of the Month (EoM) ----
-  // Scoring:
+  // Scoring (transparent):
   // +10 per completed task
   // +10 per on-time completion (COMPLETED without slaBreached)
+  // +1 per product unit worked (sum of quantities across assigned tasks), capped at +20
   // Budget bonus/penalty capped to ±20 based on spend vs sum of budgets for that employee’s tasks in range
   const eom = useMemo(() => {
     const byAssignee = {};
-    // budgets per assignee (sum budgets from their tasks)
+    // prepare budgets & product units per assignee
     for (const t of tasksInRange) {
       const a = (t.assignee || "—").toLowerCase();
       const limits = t.expenseLimits || {};
       const totalBudget = ["Hotel","Food","Travel","Other"].reduce((s,k)=> s + Number(limits[k]||0), 0);
-      const s = byAssignee[a] || (byAssignee[a] = { assignee:a, tasks:[], completed:0, onTime:0, breaches:0, budget:0, spend:0 });
+      const s = byAssignee[a] || (byAssignee[a] = {
+        assignee:a, tasks:[], completed:0, onTime:0, breaches:0, budget:0, spend:0, productUnits:0
+      });
       s.tasks.push(t.id);
       s.budget += totalBudget;
+
+      // product units = sum of quantities on task items (default 1)
+      if (Array.isArray(t.items)) {
+        for (const it of t.items) s.productUnits += Number(it?.quantity || 1);
+      }
+
       if ((t.status||"") === "COMPLETED") {
         s.completed += 1;
         if (!t.slaBreached) s.onTime += 1; else s.breaches += 1;
@@ -308,13 +317,14 @@ export default function Admin() {
       if (st === "REJECTED") continue;
       const t = tasksById[e.taskId] || {};
       const a = (t.assignee || "—").toLowerCase();
-      if (!byAssignee[a]) byAssignee[a] = { assignee:a, tasks:[], completed:0, onTime:0, breaches:0, budget:0, spend:0 };
+      if (!byAssignee[a]) byAssignee[a] = { assignee:a, tasks:[], completed:0, onTime:0, breaches:0, budget:0, spend:0, productUnits:0 };
       const amt = Number(e.editedTotal ?? e.total ?? 0) || 0;
       byAssignee[a].spend += amt;
     }
     const rows = Object.values(byAssignee).map(s => {
       const base = s.completed * 10;
       const ontime = s.onTime * 10;
+      const productBonus = Math.min(20, Math.max(0, s.productUnits * 1)); // +1 per unit, capped at +20
       let budgetBonus = 0;
       if (s.budget > 0) {
         if (s.spend <= s.budget) {
@@ -327,7 +337,7 @@ export default function Admin() {
       } else {
         if (s.spend > 0) budgetBonus = -10;
       }
-      const score = Math.round(base + ontime + budgetBonus);
+      const score = Math.round(base + ontime + productBonus + budgetBonus);
       return { ...s, score };
     }).sort((a,b)=> b.score - a.score);
     return { rows, winner: rows[0] || null };
@@ -499,24 +509,24 @@ export default function Admin() {
           <KPI title="SLA breach rate" value={`${kpis.breachRate.toFixed(1)}%`} />
         </div>
 
-        {/* CHARTS */}
+        {/* CHARTS (interactive) */}
         <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, alignItems:"start"}}>
           <div>
             <h3 style={{margin:"8px 0"}}>Spend vs Budget (by category)</h3>
-            <GroupedBars
+            <InteractiveGroupedBars
               categories={["Hotel","Food","Travel","Other"]}
               series={[
                 { name: "Budget", values: ["Hotel","Food","Travel","Other"].map(k=>Number(kpis.budget[k]||0)) },
                 { name: "Spend",  values: ["Hotel","Food","Travel","Other"].map(k=>Number(kpis.spend[k]||0)) }
               ]}
-              height={220}
+              height={240}
             />
           </div>
           <div>
             <h3 style={{margin:"8px 0"}}>Top spenders</h3>
-            <HBar
+            <InteractiveHBar
               data={(kpis.top||[]).map(r => ({ label: r.assignee || "—", value: Number(r.total||0) }))}
-              height={220}
+              height={240}
               maxBars={5}
             />
           </div>
@@ -534,10 +544,11 @@ export default function Admin() {
                 <strong>Score:</strong> {eom.winner.score} &nbsp;|&nbsp;
                 <strong>Completed:</strong> {eom.winner.completed} &nbsp;|&nbsp;
                 <strong>On-time:</strong> {eom.winner.onTime} &nbsp;|&nbsp;
+                <strong>Products worked:</strong> {eom.winner.productUnits} &nbsp;|&nbsp;
                 <strong>Spend/Budget:</strong> {ru(eom.winner.spend)} / {ru(eom.winner.budget)}
               </div>
               <div style={{overflowX:"auto"}}>
-                <table style={{borderCollapse:"collapse", width:"100%", minWidth:720}}>
+                <table style={{borderCollapse:"collapse", width:"100%", minWidth:820}}>
                   <thead>
                     <tr style={{textAlign:"left", borderBottom:"1px solid #eee"}}>
                       <th style={{padding:"6px 8px"}}>#</th>
@@ -545,7 +556,8 @@ export default function Admin() {
                       <th style={{padding:"6px 8px"}}>Score</th>
                       <th style={{padding:"6px 8px"}}>Completed</th>
                       <th style={{padding:"6px 8px"}}>On-time</th>
-                      <th style={{padding:"6px 8px"}}>Breaches</th>
+                      <th style={{padding:"6px 8px"}}>SLA breaches</th>
+                      <th style={{padding:"6px 8px"}}>Products worked</th>
                       <th style={{padding:"6px 8px"}}>Spend</th>
                       <th style={{padding:"6px 8px"}}>Budget</th>
                     </tr>
@@ -559,6 +571,7 @@ export default function Admin() {
                         <td style={{padding:"6px 8px"}}>{r.completed}</td>
                         <td style={{padding:"6px 8px"}}>{r.onTime}</td>
                         <td style={{padding:"6px 8px"}}>{r.breaches}</td>
+                        <td style={{padding:"6px 8px"}}>{r.productUnits}</td>
                         <td style={{padding:"6px 8px"}}>{ru(r.spend)}</td>
                         <td style={{padding:"6px 8px"}}>{ru(r.budget)}</td>
                       </tr>
@@ -567,7 +580,7 @@ export default function Admin() {
                 </table>
               </div>
               <div style={{fontSize:12, color:"#666", marginTop:6}}>
-                Scoring: +10 per completed task, +10 per on-time completion, and budget bonus/penalty up to ±20 based on spend vs total budget of that employee’s tasks in range.
+                Scoring: +10/completed, +10/on-time, +1/product unit (capped +20), budget bonus/penalty up to ±20 based on spend vs budget.
               </div>
             </>
           )}
@@ -1016,9 +1029,32 @@ function KPI({title, value}) {
   );
 }
 
-// ---- Tiny, dependency-free SVG charts ----
-function GroupedBars({ categories, series, height=220, width=520, padding=28 }) {
-  const max = Math.max(1, ...series.flatMap(s => s.values));
+function formatINR(n) {
+  const v = Number(n||0);
+  if (v >= 1e7) return "₹" + (v/1e7).toFixed(1) + "cr";
+  if (v >= 1e5) return "₹" + (v/1e5).toFixed(1) + "L";
+  if (v >= 1e3) return "₹" + (v/1e3).toFixed(1) + "k";
+  return "₹" + v.toFixed(0);
+}
+
+/* ------------------ Interactive Charts ------------------ */
+function useTooltip() {
+  const ref = useRef(null);
+  const [tip, setTip] = useState(null); // {x,y,html}
+  function onMove(e, html) {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setTip({ x: e.clientX - rect.left + 8, y: e.clientY - rect.top + 8, html });
+  }
+  function onLeave() { setTip(null); }
+  return { ref, tip, onMove, onLeave };
+}
+
+function InteractiveGroupedBars({ categories, series, height=240, width=560, padding=28 }) {
+  const [visible, setVisible] = useState(series.map(()=>true));
+  const activeSeries = series.map((s,i)=> visible[i] ? s : { ...s, values: s.values.map(()=>0) });
+  const max = Math.max(1, ...activeSeries.flatMap(s => s.values));
   const barW = 18;
   const gapInner = 10;
   const groupW = (series.length * barW) + gapInner*(series.length-1);
@@ -1027,90 +1063,125 @@ function GroupedBars({ categories, series, height=220, width=520, padding=28 }) 
   const h = height;
   const chartH = h - padding*1.6;
   const baselineY = chartH + padding*0.2;
+  const { ref, tip, onMove, onLeave } = useTooltip();
+
+  const fills = ["#dbeafe","#c7f9e3","#fde68a","#fbcfe8","#e5e7eb"];
+  const strokes = ["#9ac1ee","#85dcb5","#f1bf42","#f28dbf","#c7c9cc"];
 
   return (
-    <svg width="100%" viewBox={`0 0 ${totalW} ${h}`} role="img" aria-label="Grouped bar chart">
-      {/* axes */}
-      <line x1={padding} y1={baselineY} x2={totalW-padding} y2={baselineY} stroke="#ddd"/>
-      {/* y ticks */}
-      {Array.from({length:4}, (_,i)=> (i+1)).map(i=>{
-        const y = baselineY - (i*(chartH/4));
-        return <g key={i}>
-          <line x1={padding} x2={totalW-padding} y1={y} y2={y} stroke="#f5f5f5"/>
-          <text x={padding-6} y={y} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="#777">
-            {formatINR(max*(i/4))}
-          </text>
-        </g>;
-      })}
+    <div style={{position:"relative"}} ref={ref}>
+      <svg width="100%" viewBox={`0 0 ${totalW} ${h}`} role="img" aria-label="Grouped bar chart">
+        {/* axes */}
+        <line x1={padding} y1={baselineY} x2={totalW-padding} y2={baselineY} stroke="#ddd"/>
+        {/* y ticks */}
+        {Array.from({length:4}, (_,i)=> (i+1)).map(i=>{
+          const y = baselineY - (i*(chartH/4));
+          return <g key={i}>
+            <line x1={padding} x2={totalW-padding} y1={y} y2={y} stroke="#f5f5f5"/>
+            <text x={padding-6} y={y} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="#777">
+              {formatINR(max*(i/4))}
+            </text>
+          </g>;
+        })}
 
-      {categories.map((c, idx) => {
-        const gx = padding + idx*(groupW + gapOuter);
-        return (
-          <g key={c} transform={`translate(${gx},0)`}>
-            {/* bars */}
-            {series.map((s, si) => {
-              const v = Number(s.values[idx]||0);
-              const hgt = Math.max(0, (v/max) * (chartH-4));
-              const x = si*(barW + gapInner);
-              const y = baselineY - hgt;
-              const fill = si === 0 ? "#dbeafe" : "#c7f9e3";
-              const stroke = si === 0 ? "#9ac1ee" : "#85dcb5";
-              return <rect key={si} x={x} y={y} width={barW} height={hgt} fill={fill} stroke={stroke} />;
-            })}
-            {/* label */}
-            <text x={groupW/2} y={baselineY+12} textAnchor="middle" fontSize="11" fill="#555">{c}</text>
-          </g>
-        );
-      })}
+        {categories.map((c, idx) => {
+          const gx = padding + idx*(groupW + gapOuter);
+          return (
+            <g key={c} transform={`translate(${gx},0)`}>
+              {/* bars */}
+              {series.map((s, si) => {
+                const v = Number(activeSeries[si].values[idx]||0);
+                const hgt = Math.max(0, (v/max) * (chartH-4));
+                const x = si*(barW + gapInner);
+                const y = baselineY - hgt;
+                const fill = fills[si % fills.length];
+                const stroke = strokes[si % strokes.length];
+                const faded = !visible[si];
+                return (
+                  <rect
+                    key={si}
+                    x={x} y={y} width={barW} height={hgt}
+                    fill={fill} stroke={stroke}
+                    opacity={faded ? 0.25 : 1}
+                    onMouseMove={(e)=> onMove(e, `<strong>${s.name}</strong> in <em>${c}</em><br/>${ru(Number(series[si].values[idx]||0))}`)}
+                    onMouseLeave={onLeave}
+                  />
+                );
+              })}
+              {/* label */}
+              <text x={groupW/2} y={baselineY+12} textAnchor="middle" fontSize="11" fill="#555">{c}</text>
+            </g>
+          );
+        })}
 
-      {/* legend */}
-      <g transform={`translate(${padding}, ${padding-12})`}>
-        {series.map((s, i)=>(
-          <g key={s.name} transform={`translate(${i*110},0)`}>
-            <rect width="10" height="10" fill={i===0?"#dbeafe":"#c7f9e3"} stroke={i===0?"#9ac1ee":"#85dcb5"}/>
-            <text x="14" y="9" fontSize="11" fill="#555">{s.name}</text>
-          </g>
-        ))}
-      </g>
-    </svg>
+        {/* legend (click to toggle) */}
+        <g transform={`translate(${padding}, ${padding-12})`}>
+          {series.map((s, i)=>(
+            <g key={s.name} transform={`translate(${i*130},0)`} style={{cursor:"pointer"}}
+               onClick={()=> setVisible(v => v.map((x,idx)=> idx===i ? !x : x))}>
+              <rect width="12" height="12" fill={fills[i % fills.length]} stroke={strokes[i % strokes.length]} opacity={visible[i]?1:0.25}/>
+              <text x="16" y="10.5" fontSize="11" fill="#555">{s.name} {visible[i] ? "" : "(off)"}</text>
+            </g>
+          ))}
+        </g>
+      </svg>
+      {tip && (
+        <div
+          style={{
+            position:"absolute", left: tip.x, top: tip.y, background:"#111", color:"#fff",
+            fontSize:12, padding:"6px 8px", borderRadius:6, pointerEvents:"none", whiteSpace:"nowrap", boxShadow:"0 4px 12px rgba(0,0,0,0.2)"
+          }}
+          dangerouslySetInnerHTML={{__html: tip.html}}
+        />
+      )}
+    </div>
   );
 }
 
-function HBar({ data, height=220, width=520, padding=28, maxBars=5 }) {
+function InteractiveHBar({ data, height=240, width=560, padding=28, maxBars=5 }) {
   const rows = (data||[]).slice(0, maxBars);
   const max = Math.max(1, ...rows.map(r=>r.value));
-  const rowH = Math.max(20, (height - padding*1.6) / Math.max(1, rows.length));
+  const rowH = Math.max(22, (height - padding*1.6) / Math.max(1, rows.length));
   const totalH = Math.max(height, padding*1.6 + rows.length*rowH);
   const chartW = width - padding*2;
+  const { ref, tip, onMove, onLeave } = useTooltip();
 
   return (
-    <svg width="100%" viewBox={`0 0 ${width} ${totalH}`} role="img" aria-label="Horizontal bar chart">
-      {rows.map((r, i) => {
-        const y = padding + i*rowH;
-        const w = Math.max(2, (r.value/max)*chartW);
-        return (
-          <g key={r.label}>
-            <rect x={padding} y={y+4} width={chartW} height={rowH-8} fill="#f6f6f6" />
-            <rect x={padding} y={y+4} width={w} height={rowH-8} fill="#e3f2fd" stroke="#9ac1ee" />
-            <text x={padding+6} y={y + rowH/2 + 1} fontSize="11" dominantBaseline="middle" fill="#333">
-              {r.label}
-            </text>
-            <text x={padding + chartW - 6} y={y + rowH/2 + 1} fontSize="11" dominantBaseline="middle" textAnchor="end" fill="#555">
-              {ru(r.value)}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
+    <div style={{position:"relative"}} ref={ref}>
+      <svg width="100%" viewBox={`0 0 ${width} ${totalH}`} role="img" aria-label="Horizontal bar chart">
+        {rows.map((r, i) => {
+          const y = padding + i*rowH;
+          const w = Math.max(2, (r.value/max)*chartW);
+          return (
+            <g key={r.label}>
+              <rect x={padding} y={y+4} width={chartW} height={rowH-8} fill="#f6f6f6" />
+              <rect
+                x={padding} y={y+4} width={w} height={rowH-8}
+                fill="#e3f2fd" stroke="#9ac1ee"
+                onMouseMove={(e)=> onMove(e, `<strong>${r.label}</strong><br/>${ru(r.value)}`)}
+                onMouseLeave={onLeave}
+              />
+              <text x={padding+6} y={y + rowH/2 + 1} fontSize="11" dominantBaseline="middle" fill="#333">
+                {r.label}
+              </text>
+              <text x={padding + chartW - 6} y={y + rowH/2 + 1} fontSize="11" dominantBaseline="middle" textAnchor="end" fill="#555">
+                {ru(r.value)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      {tip && (
+        <div
+          style={{
+            position:"absolute", left: tip.x, top: tip.y, background:"#111", color:"#fff",
+            fontSize:12, padding:"6px 8px", borderRadius:6, pointerEvents:"none", whiteSpace:"nowrap", boxShadow:"0 4px 12px rgba(0,0,0,0.2)"
+          }}
+          dangerouslySetInnerHTML={{__html: tip.html}}
+        />
+      )}
+    </div>
   );
-}
-
-function formatINR(n) {
-  const v = Number(n||0);
-  if (v >= 1e7) return "₹" + (v/1e7).toFixed(1) + "cr";
-  if (v >= 1e5) return "₹" + (v/1e5).toFixed(1) + "L";
-  if (v >= 1e3) return "₹" + (v/1e3).toFixed(1) + "k";
-  return "₹" + v.toFixed(0);
 }
 
 function StatusTag({s}) {

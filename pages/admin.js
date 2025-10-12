@@ -4,13 +4,10 @@ function ru(n){ return n==null ? "—" : `₹${Number(n).toLocaleString("en-IN",
 
 function toIsoFromLocal(dateStr, timeStr) {
   if (!dateStr && !timeStr) return null;
-  if (!dateStr) return null; // need at least a date
+  if (!dateStr) return null;
   const [y, m, d] = dateStr.split("-").map(Number);
   let hh = 0, mm = 0;
-  if (timeStr) {
-    const parts = timeStr.split(":").map(Number);
-    hh = parts[0] ?? 0; mm = parts[1] ?? 0;
-  }
+  if (timeStr) { const parts = timeStr.split(":").map(Number); hh = parts[0] ?? 0; mm = parts[1] ?? 0; }
   const dt = new Date(y, (m || 1) - 1, d || 1, hh, mm, 0);
   return dt.toISOString();
 }
@@ -18,12 +15,10 @@ function toIsoFromLocal(dateStr, timeStr) {
 export default function Admin() {
   const [tenantId] = useState("default");
 
-  // Task state
   const [tasks, setTasks] = useState([]);
   const [taskTitleById, setTaskTitleById] = useState({});
   const [selected, setSelected] = useState(null);
 
-  // Create form
   const [title, setTitle] = useState("");
   const [assignee, setAssignee] = useState("");
   const [slaStartDate, setSlaStartDate] = useState("");
@@ -31,14 +26,12 @@ export default function Admin() {
   const [slaEndDate, setSlaEndDate] = useState("");
   const [slaEndTime, setSlaEndTime] = useState("");
 
-  // Limits + details
   const [limits, setLimits] = useState({Hotel:1000, Food:1000, Travel:1000, Other:1000});
   const [expenses, setExpenses] = useState([]);
   const [events, setEvents] = useState([]);
 
-  // Pending approval queue
   const [pending, setPending] = useState([]);
-  const [note, setNote] = useState({}); // expenseId -> note string
+  const [note, setNote] = useState({}); // expenseId -> note
 
   async function loadTasks() {
     const j = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
@@ -47,17 +40,15 @@ export default function Admin() {
     const m = {}; arr.forEach(t => { m[t.id] = t.title || t.id; });
     setTaskTitleById(m);
   }
-
   async function loadPending() {
     const j = await fetch(`/api/expenses/pending?tenantId=${tenantId}`).then(r=>r.json());
     setPending(Array.isArray(j) ? j : []);
   }
-
   useEffect(()=>{ loadTasks(); loadPending(); }, []);
 
   async function selectTask(t) {
     setSelected(t);
-    setLimits(t.expenseLimits || {Hotel:1000, Food:1000, Travel:1000, Other:1000});
+    setLimits(t.expenseLimits || {Hotel:1000, Food:1000, Other:1000, Travel:1000});
     const ex = await fetch(`/api/expenses/byTask?taskId=${t.id}&tenantId=${tenantId}`).then(r=>r.json());
     setExpenses(Array.isArray(ex)?ex:[]);
     const ev = await fetch(`/api/tasks/events?taskId=${t.id}&tenantId=${tenantId}`).then(r=>r.json());
@@ -82,27 +73,12 @@ export default function Admin() {
     if (!title) return alert("Title required");
     const slaStartISO = toIsoFromLocal(slaStartDate, slaStartTime);
     const slaEndISO   = toIsoFromLocal(slaEndDate, slaEndTime);
-
-    const body = {
-      tenantId, title, assignee,
-      slaStart: slaStartISO,
-      slaEnd:   slaEndISO,
-      type: "Data collection",
-      status: "ASSIGNED",
-      expenseLimits: limits
-    };
-
+    const body = { tenantId, title, assignee, slaStart: slaStartISO, slaEnd: slaEndISO, type: "Data collection", status: "ASSIGNED", expenseLimits: limits };
     const r = await fetch(`/api/tasks`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
     const j = await r.json();
     if (!r.ok) return alert(j.error||"create failed");
-
-    // reset form
-    setTitle(""); setAssignee("");
-    setSlaStartDate(""); setSlaStartTime("");
-    setSlaEndDate(""); setSlaEndTime("");
-
-    await loadTasks();
-    await selectTask(j);
+    setTitle(""); setAssignee(""); setSlaStartDate(""); setSlaStartTime(""); setSlaEndDate(""); setSlaEndTime("");
+    await loadTasks(); await selectTask(j);
   }
 
   async function openReceiptFor(exp) {
@@ -112,6 +88,10 @@ export default function Admin() {
   }
 
   async function decide(expenseId, action) {
+    if (action === "reject" && !(note[expenseId]||"").trim()) {
+      alert("Please add a note to reject.");
+      return;
+    }
     const url = action === "approve" ? "/api/expenses/approve" : "/api/expenses/reject";
     const r = await fetch(url, {
       method: "POST",
@@ -120,19 +100,15 @@ export default function Admin() {
     });
     const j = await r.json();
     if (!r.ok) return alert(j.error||`${action} failed`);
-    // refresh queue
     await loadPending();
-    // refresh selected task expenses if relevant
     if (selected && j.taskId === selected.id) {
       const ex = await fetch(`/api/expenses/byTask?taskId=${selected.id}&tenantId=${tenantId}`).then(r=>r.json());
       setExpenses(Array.isArray(ex)?ex:[]);
     }
   }
 
-  const pendingSorted = useMemo(()=> {
-    const arr = [...pending];
-    arr.sort((a,b)=> new Date(a.createdAt) - new Date(b.createdAt));
-    return arr;
+  const pendingSorted = useMemo(()=>{
+    const arr = [...pending]; arr.sort((a,b)=> new Date(a.createdAt) - new Date(b.createdAt)); return arr;
   }, [pending]);
 
   return (
@@ -160,17 +136,11 @@ export default function Admin() {
                   </div>
                   <div>Category: <strong>{e.category || "—"}</strong></div>
                   <div>Amount: <strong>{ru(e.editedTotal ?? e.total)}</strong></div>
-                  <div style={{display:"flex", gap:6}}>
-                    <button onClick={()=>openReceiptFor(e)}>Open receipt</button>
-                  </div>
+                  <div style={{display:"flex", gap:6}}><button onClick={()=>openReceiptFor(e)}>Open receipt</button></div>
                 </div>
 
                 <div style={{display:"grid", gridTemplateColumns:"1fr auto auto", gap:8, marginTop:8}}>
-                  <input
-                    placeholder="note (optional)"
-                    value={note[e.id] || ""}
-                    onChange={ev=>setNote(n => ({...n, [e.id]: ev.target.value}))}
-                  />
+                  <input placeholder="note (required to reject)" value={note[e.id] || ""} onChange={ev=>setNote(n => ({...n, [e.id]: ev.target.value}))}/>
                   <button onClick={()=>decide(e.id, "approve")}>Approve</button>
                   <button onClick={()=>decide(e.id, "reject")}>Reject</button>
                 </div>
@@ -184,53 +154,28 @@ export default function Admin() {
         )}
       </section>
 
-      {/* Create task */}
+      {/* Create + manage tasks */}
       <section style={{border:"1px solid #ddd", borderRadius:8, padding:12, marginBottom:16}}>
         <h2>Create task</h2>
-
-        {/* Top row */}
         <div style={{display:"grid", gridTemplateColumns:"2fr 1fr", gap:8, alignItems:"end", marginBottom:10}}>
-          <label>Title
-            <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="e.g., Visit Site A"/>
-          </label>
-          <label>Assignee
-            <input value={assignee} onChange={e=>setAssignee(e.target.value)} placeholder="emp-001"/>
-          </label>
+          <label>Title<input value={title} onChange={e=>setTitle(e.target.value)} placeholder="e.g., Visit Site A"/></label>
+          <label>Assignee<input value={assignee} onChange={e=>setAssignee(e.target.value)} placeholder="emp-001"/></label>
         </div>
-
-        {/* SLA rows with separate Date + Time */}
-        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:8, alignItems:"end"}}>
-          <label>SLA start (date)
-            <input type="date" value={slaStartDate} onChange={e=>setSlaStartDate(e.target.value)} />
-          </label>
-          <label>SLA start (time)
-            <input type="time" step="60" value={slaStartTime} onChange={e=>setSlaStartTime(e.target.value)} />
-          </label>
-          <label>SLA end (date)
-            <input type="date" value={slaEndDate} onChange={e=>setSlaEndDate(e.target.value)} />
-          </label>
-          <label>SLA end (time)
-            <input type="time" step="60" value={slaEndTime} onChange={e=>setSlaEndTime(e.target.value)} />
-          </label>
+        <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8}}>
+          <label>SLA start (date)<input type="date" value={slaStartDate} onChange={e=>setSlaStartDate(e.target.value)}/></label>
+          <label>SLA start (time)<input type="time" step="60" value={slaStartTime} onChange={e=>setSlaStartTime(e.target.value)}/></label>
+          <label>SLA end (date)<input type="date" value={slaEndDate} onChange={e=>setSlaEndDate(e.target.value)}/></label>
+          <label>SLA end (time)<input type="time" step="60" value={slaEndTime} onChange={e=>setSlaEndTime(e.target.value)}/></label>
         </div>
-
-        {/* Limits */}
         <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, maxWidth:720, marginTop:10}}>
           {["Hotel","Food","Travel","Other"].map(k=>(
-            <label key={k}>{k}
-              <input type="number" step="1" value={limits[k]??0} onChange={e=>upd(k, e.target.value)}/>
-            </label>
+            <label key={k}>{k}<input type="number" step="1" value={limits[k]??0} onChange={e=>setLimits(L=>({...L,[k]:Number(e.target.value||0)}))}/></label>
           ))}
         </div>
-
-        <div style={{marginTop:10, fontSize:12, color:"#666"}}>
-          Times are interpreted in your local timezone and saved as ISO (UTC).
-        </div>
-
+        <div style={{marginTop:10, fontSize:12, color:"#666"}}>Times are saved in UTC ISO.</div>
         <button onClick={createTask} style={{marginTop:10}}>Create task</button>
       </section>
 
-      {/* Lists */}
       <section style={{display:"grid", gridTemplateColumns:"1fr 2fr", gap:16}}>
         <div>
           <h2>Tasks</h2>
@@ -253,9 +198,7 @@ export default function Admin() {
               <h2>Limits for: <span style={{fontWeight:600}}>{selected.title || selected.id}</span></h2>
               <div style={{display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:8, maxWidth:720}}>
                 {["Hotel","Food","Travel","Other"].map(k=>(
-                  <label key={k}>{k}
-                    <input type="number" step="1" value={limits[k] ?? 0} onChange={e=>upd(k, e.target.value)} />
-                  </label>
+                  <label key={k}>{k}<input type="number" step="1" value={limits[k] ?? 0} onChange={e=>setLimits(L=>({...L,[k]:Number(e.target.value||0)}))} /></label>
                 ))}
               </div>
               <button onClick={saveLimits} style={{marginTop:10}}>Save limits</button>
@@ -277,6 +220,9 @@ export default function Admin() {
                     <div style={{fontSize:12, color:"#555"}}>{new Date(e.createdAt).toLocaleString()} — {e.merchant || "Merchant"}</div>
                     <button onClick={()=>openReceiptFor(e)} style={{marginTop:6}}>Open receipt</button>
                     {e.isManualOverride && <span style={{marginLeft:8, fontSize:12, color:"#b95"}}>edited total</span>}
+                    {e.approval?.status === "REJECTED" && e.approval?.note && (
+                      <div style={{marginTop:6, fontSize:12, color:"#b22"}}>Decision note: {e.approval.note}</div>
+                    )}
                   </li>
                 ))}
               </ul>

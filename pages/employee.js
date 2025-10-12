@@ -3,15 +3,19 @@ import { useEffect, useMemo, useState } from "react";
 function sanitizeName(name) {
   return name.replace(/\s+/g, "_").replace(/[^a-zA-Z0-9._-]/g, "");
 }
+function ru(n){ return n==null ? "—" : `₹${Number(n).toLocaleString("en-IN",{maximumFractionDigits:2})}`; }
 
 export default function Employee() {
   const [tenantId] = useState("default");
   const [employeeId] = useState("emp-001");
 
+  // Tasks and selection
   const [tasks, setTasks] = useState([]);
   const [taskQuery, setTaskQuery] = useState("");
   const [taskId, setTaskId] = useState("");
+  const selectedTask = useMemo(()=> tasks.find(t=>t.id===taskId) || null, [tasks, taskId]);
 
+  // Timeline
   const [events, setEvents] = useState([]);
 
   // Expense flow
@@ -27,6 +31,7 @@ export default function Employee() {
   const [loading, setLoading] = useState(false);
   const [expenses, setExpenses] = useState([]);
 
+  // Load tasks
   useEffect(() => {
     (async () => {
       const j = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
@@ -34,6 +39,7 @@ export default function Employee() {
     })();
   }, []);
 
+  // Load timeline + expenses on selection
   useEffect(() => { taskId ? loadEvents() : setEvents([]); loadTaskExpenses(); }, [taskId]);
 
   async function loadEvents() {
@@ -95,9 +101,7 @@ export default function Employee() {
     if (j.idempotent) alert("Already checked out.");
   }
 
-  function totalOrUndefined() {
-    return editedTotal !== "" ? Number(editedTotal) : undefined;
-  }
+  function totalOrUndefined() { return editedTotal !== "" ? Number(editedTotal) : undefined; }
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -105,6 +109,7 @@ export default function Employee() {
     try {
       setLoading(true); setApproval(null);
 
+      // Update existing expense (no new upload/OCR)
       if (expenseId) {
         const finRes = await fetch(`/api/expenses/finalize`, {
           method:"POST", headers:{"Content-Type":"application/json"},
@@ -118,8 +123,8 @@ export default function Employee() {
         return;
       }
 
+      // First submit: upload + OCR + finalize
       if (!file) return alert("Choose a receipt file first");
-
       const sas = await fetch(`/api/receipts/sas?taskId=${encodeURIComponent(taskId)}&filename=${encodeURIComponent(lastFileName)}`).then(r=>r.json());
       if (sas.error) throw new Error(sas.error);
 
@@ -175,10 +180,36 @@ export default function Employee() {
     setEditedTotal(base != null ? String(base) : "");
     setOcr(null); setApproval(e.approval || null);
     setCurrentExpense(e);
-    setFile(null);
-    setLastFileName("");
+    setFile(null); setLastFileName("");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
+
+  // ---------- Remaining-only budget ----------
+  const limits = selectedTask?.expenseLimits || {Hotel:1000, Food:1000, Travel:1000, Other:1000};
+  const remaining = useMemo(() => {
+    const cats = ["Hotel","Food","Travel","Other"];
+    const spentByCat = Object.create(null);
+    let overallSpent = 0;
+
+    (expenses || []).forEach(e => {
+      if (e.taskId !== taskId) return;
+      const status = e.approval?.status;
+      if (status === "REJECTED") return; // rejected doesn't consume budget
+      const cat = cats.includes(e.category) ? e.category : "Other";
+      const amt = Number(e.editedTotal ?? e.total) || 0;
+      spentByCat[cat] = (spentByCat[cat] || 0) + amt;
+      overallSpent += amt;
+    });
+
+    const per = cats.map(cat => {
+      const limit = Number(limits[cat] ?? (cat==="Other" ? 1000 : 0)) || 0;
+      const spent = Number(spentByCat[cat] || 0);
+      return { cat, remaining: limit - spent };
+    });
+
+    const overallLimit = cats.reduce((s,k)=> s + (Number(limits[k]||0)), 0);
+    return { per, overallRemaining: overallLimit - overallSpent };
+  }, [expenses, taskId, limits]);
 
   return (
     <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto", maxWidth:900}}>
@@ -209,6 +240,28 @@ export default function Employee() {
           <button onClick={checkOut} disabled={!taskId || !hasCheckIn || hasCheckOut}>Check out</button>
         </div>
       </section>
+
+      {/* ---------- Remaining-only budget panel ---------- */}
+      {selectedTask && (
+        <section style={{border:"1px solid #ddd", borderRadius:8, padding:12, marginBottom:16, background:"#fafafa"}}>
+          <h2 style={{margin:"0 0 8px"}}>Remaining budget</h2>
+          <div style={{marginBottom:10}}>
+            Overall remaining: <strong style={{color: remaining.overallRemaining < 0 ? "#c62828" : "#2e7d32"}}>
+              {ru(remaining.overallRemaining)}
+            </strong>
+          </div>
+          <div style={{display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:10}}>
+            {remaining.per.map(row => (
+              <div key={row.cat} style={{border:"1px solid #eee", borderRadius:8, padding:"10px 12px"}}>
+                <div style={{display:"flex", justifyContent:"space-between"}}>
+                  <span><strong>{row.cat}</strong></span>
+                  <span style={{color: row.remaining < 0 ? "#c62828" : "#2e7d32"}}>{ru(row.remaining)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Expense form */}
       <form onSubmit={handleSubmit} style={{display:"grid", gap:12, margin:"1rem 0"}}>
@@ -265,7 +318,6 @@ export default function Employee() {
                 <button onClick={()=>startEditingRejected(e)}>Edit &amp; resubmit</button>
               )}
             </div>
-            {/* Show feedback ONLY when rejected */}
             {e.approval?.status === "REJECTED" && e.approval?.note && (
               <div style={{marginTop:6, fontSize:13, color:"#b22"}}>
                 Admin feedback: {e.approval.note}

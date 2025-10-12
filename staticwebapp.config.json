@@ -14,8 +14,8 @@
     { "route": "/api/products", "methods": ["POST"], "allowedRoles": ["admin"] },
 
     { "route": "/api/tasks/limits", "allowedRoles": ["admin"] },
-    { "route": "/api/tasks", "methods": ["POST"], "allowedRoles": ["admin"] },
-
+    { "route": "/api/tasks", "methods": ["POST","PUT"], "allowedRoles": ["admin"] },
+    { "route": "/api/tasks/update", "methods": ["POST","PUT"], "allowedRoles": ["admin"] },
     { "route": "/api/tasks/delete", "methods": ["POST","DELETE"], "allowedRoles": ["admin"] },
 
     { "route": "/api/*", "methods": ["OPTIONS"], "allowedRoles": ["anonymous"] },

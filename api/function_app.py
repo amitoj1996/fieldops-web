@@ -925,3 +925,89 @@ def tasks_delete(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}),
                                  mimetype="application/json", status_code=500)
+
+# ---- Tasks (update: title/type/assignee/SLA/budgets/products)
+@app.route(route="tasks/update", methods=["POST","PUT"])
+def tasks_update(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Update an existing Task (admin only).
+    Body accepts:
+      {
+        "tenantId": "default",
+        "taskId": "<id>",      // required
+        "title": "...",
+        "type": "data_collection|product_execution|revisit",
+        "assignee": "user@example.com",
+        "slaStart": "2025-10-11T09:00:00Z",
+        "slaEnd":   "2025-10-11T18:00:00Z",
+        "expenseLimits": { "Hotel": 1200, "Food": 900, "Travel": 1500, "Other": 500 },
+        "items": [ { "productId": "p1", "quantity": 2 }, ... ]
+      }
+    """
+    pr, err = _ensure_admin(req)
+    if err: return err
+    try:
+        data = req.get_json()
+        tenant = (data.get("tenantId") or "default").strip()
+        task_id = (data.get("taskId") or data.get("id") or "").strip()
+        if not task_id:
+            return func.HttpResponse(json.dumps({"error":"taskId required"}),
+                                     mimetype="application/json", status_code=400)
+
+        task = _get_task(tenant, task_id)
+        if not task:
+            return func.HttpResponse(json.dumps({"error":"task not found"}),
+                                     mimetype="application/json", status_code=404)
+
+        # Patch allowed fields
+        if "title" in data:
+            task["title"] = (data.get("title") or "").strip()
+        if "type" in data:
+            task["type"] = (data.get("type") or "").strip()
+        if "assignee" in data:
+            task["assignee"] = (data.get("assignee") or "").strip()
+
+        if "slaStart" in data:
+            task["slaStart"] = data.get("slaStart") or None
+        if "slaEnd" in data:
+            task["slaEnd"] = data.get("slaEnd") or None
+
+        # Budgets
+        if isinstance(data.get("expenseLimits"), dict):
+            el = data["expenseLimits"]
+            def num(x): 
+                try: return float(x)
+                except: return 0.0
+            limits = {
+                "Hotel":  num(el.get("Hotel",  DEFAULT_LIMITS.get("Hotel", 1000))),
+                "Food":   num(el.get("Food",   DEFAULT_LIMITS.get("Food",  1000))),
+                "Travel": num(el.get("Travel", DEFAULT_LIMITS.get("Travel",1000))),
+                "Other":  num(el.get("Other",  DEFAULT_LIMITS.get("Other", 1000)))
+            }
+            task["expenseLimits"] = limits
+
+        # Products
+        if isinstance(data.get("items"), list):
+            norm = []
+            for it in data["items"]:
+                pid = (it.get("productId") or it.get("product") or "").strip()
+                if not pid: 
+                    continue
+                try:
+                    qty = int(it.get("quantity") or 1)
+                except Exception:
+                    qty = 1
+                if qty < 1: qty = 1
+                norm.append({"productId": pid, "quantity": qty})
+            task["items"] = norm
+
+        # Keep docType + updatedAt
+        task["docType"] = "Task"
+        task["updatedAt"] = _now_iso()
+
+        _save_task(task)
+        return func.HttpResponse(json.dumps(task), mimetype="application/json", status_code=200)
+
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}),
+                                 mimetype="application/json", status_code=500)

@@ -1,4 +1,4 @@
-import os, json, uuid, re, time
+import os, json, uuid, re, time, io, csv
 from datetime import datetime, timezone, timedelta
 
 import azure.functions as func
@@ -33,10 +33,11 @@ def _expenses_container():
     return _get_container_named(os.environ.get("EXPENSES_CONTAINER", "Expenses"))
 
 def _events_container():
+    # Use Tasks container by default to avoid RU spikes from a new container
     return _get_container_named(os.environ.get("EVENTS_CONTAINER", "Tasks"))
 
 def _catalog_container():
-    # reuse same container as Tasks to save RU; separate by docType='Product'
+    # Reuse Tasks container; separate by docType='Product' to save cost
     return _get_container_named(os.environ.get("CATALOG_CONTAINER", "Tasks"))
 
 DEFAULT_LIMITS = {"Hotel": 1000, "Food": 1000, "Travel": 1000, "Other": 1000}
@@ -144,7 +145,7 @@ def create_task(req: func.HttpRequest) -> func.HttpResponse:
         data = req.get_json()
         c = _tasks_container()
         limits = data.get("expenseLimits") or DEFAULT_LIMITS.copy()
-        items  = data.get("items") or []  # <-- persist products on task
+        items  = data.get("items") or []
         item = {
             "id": data.get("id") or str(uuid.uuid4()),
             "tenantId": data.get("tenantId", "default"),
@@ -260,7 +261,7 @@ def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
         if late and not reason:
             return func.HttpResponse(json.dumps({"error":"reason required because task is beyond SLA"}), mimetype="application/json", status_code=400)
 
-        ev = {"id": str(uuid.uuid4()), "docType":"TaskEvent", "tenantId": tenant, "taskId": task_id,
+        ev = {"id": str(uuid.uuiduuid4()) if False else str(uuid.uuid4()), "docType":"TaskEvent", "tenantId": tenant, "taskId": task_id,
               "eventType":"CHECK_OUT", "ts": _now_iso(), "lat": lat, "lng": lng, "late": late, "reason": reason}
         if actor: ev["actor"] = actor
         evc.create_item(ev)
@@ -390,7 +391,7 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
                 return x.get("content")
             merchant = _val(f.get("MerchantName", {}))
             total    = _val(f.get("Total", {}))
-            date     = __val(f.get("TransactionDate", {}))
+            date     = _val(f.get("TransactionDate", {}))
             currency = None
             vc = f.get("Total", {}).get("valueCurrency") if isinstance(f.get("Total", {}), dict) else None
             if isinstance(vc, dict):
@@ -450,7 +451,7 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps({"error": str(e)}),
                                  mimetype="application/json", status_code=500)
 
-# ---- Finalize with remaining-budget logic
+# ---- Finalize with REMAINING budget logic
 @app.route(route="expenses/finalize", methods=["POST"])
 def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
     try:
@@ -630,5 +631,128 @@ def expenses_reject(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(json.dumps({"error":"note required to reject"}), mimetype="application/json", status_code=400)
         exp = _decide_expense(expense_id, tenant, "REJECTED", note, decided_by)
         return func.HttpResponse(json.dumps(exp), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+# ---- Report CSV
+@app.route(route="report/csv", methods=["GET"])
+def report_csv(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Export a CSV of tasks with: SLA, late flag, assigned products,
+    per-category totals (excluding REJECTED), and counts by status.
+    Optional query params:
+      tenantId (default 'default')
+      fromDate (YYYY-MM-DD)  - filters by task.createdAt >= fromDate
+      toDate   (YYYY-MM-DD)  - filters by task.createdAt <= toDate
+    """
+    try:
+        tenant = req.params.get("tenantId", "default")
+        from_date = req.params.get("fromDate")
+        to_date   = req.params.get("toDate")
+
+        # 1) Pull all tasks for tenant (optionally filter by createdAt)
+        tc = _tasks_container()
+        tq = "SELECT * FROM c WHERE c.docType='Task' AND c.tenantId=@t"
+        tasks = list(tc.query_items(tq, parameters=[{"name":"@t","value":tenant}], enable_cross_partition_query=True))
+
+        def _in_range(tdoc):
+            if not from_date and not to_date:
+                return True
+            ca = tdoc.get("createdAt")
+            try:
+                dt = _parse_iso(ca) or datetime.min.replace(tzinfo=timezone.utc)
+            except Exception:
+                dt = datetime.min.replace(tzinfo=timezone.utc)
+            if from_date:
+                f = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                if dt < f: return False
+            if to_date:
+                tt = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+                if dt >= tt: return False
+            return True
+
+        tasks = [t for t in tasks if _in_range(t)]
+
+        # 2) Pull all expenses for tenant (group in-memory by task)
+        ec = _expenses_container()
+        eq = "SELECT * FROM c WHERE c.docType='Expense' AND c.tenantId=@t"
+        expenses = list(ec.query_items(eq, parameters=[{"name":"@t","value":tenant}], enable_cross_partition_query=True))
+        exp_by_task = {}
+        for e in expenses:
+            exp_by_task.setdefault(e.get("taskId"), []).append(e)
+
+        # 3) Compose CSV rows
+        buf = io.StringIO()
+        # Optional BOM for better Excel support
+        buf.write("\ufeff")
+        writer = csv.writer(buf)
+        header = [
+            "Task ID","Title","Assignee","Status",
+            "SLA Start","SLA End","Check-in","Check-out","SLA Breached",
+            "Products (name x qty)",
+            "Hotel total","Food total","Travel total","Other total","Grand total",
+            "Pending count","Approved count","Rejected count"
+        ]
+        writer.writerow(header)
+
+        def _money(x):
+            try: return float(x or 0)
+            except: return 0.0
+
+        for t in tasks:
+            t_id = t.get("id"); t_title = t.get("title") or ""
+            t_assignee = t.get("assignee") or ""
+            t_status = t.get("status") or ""
+            sla_start = t.get("slaStart") or ""
+            sla_end   = t.get("slaEnd") or ""
+            cin = t.get("checkInAt") or ""
+            cout= t.get("checkOutAt") or ""
+            breached = bool(t.get("slaBreached"))
+
+            # Products summary
+            items = t.get("items") or []
+            products_str = ", ".join([f"{(it.get('name') or '').replace(',', ' ')} x{it.get('qty') or 1}" for it in items])
+
+            hotel = food = travel = other = 0.0
+            pending = approved = rejected = 0
+
+            for e in exp_by_task.get(t_id, []):
+                st = (e.get("approval") or {}).get("status")
+                amt = _money(e.get("editedTotal", e.get("total")))
+                cat = e.get("category") or "Other"
+                if st == "REJECTED":
+                    rejected += 1
+                    continue
+                if st in ("PENDING_REVIEW", None, ""):
+                    pending += 1
+                elif st in ("APPROVED","AUTO_APPROVED"):
+                    approved += 1
+                # Totals exclude REJECTED; include PENDING and APPROVED
+                if cat == "Hotel":
+                    hotel += amt
+                elif cat == "Food":
+                    food += amt
+                elif cat == "Travel":
+                    travel += amt
+                else:
+                    other += amt
+
+            total = hotel+food+travel+other
+            writer.writerow([
+                t_id, t_title, t_assignee, t_status,
+                sla_start, sla_end, cin, cout, "YES" if breached else "NO",
+                products_str,
+                f"{hotel:.2f}", f"{food:.2f}", f"{travel:.2f}", f"{other:.2f}", f"{total:.2f}",
+                pending, approved, rejected
+            ])
+
+        data = buf.getvalue()
+        filename = f"fieldops_report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+        headers = {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+        return func.HttpResponse(data, headers=headers, status_code=200)
+
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)

@@ -285,9 +285,10 @@ export default function Admin() {
   // ---- Employee of the Month (EoM) ----
   // Scoring (transparent):
   // +10 per completed task
-  // +10 per on-time completion (COMPLETED without slaBreached)
-  // +1 per product unit worked (sum of quantities across assigned tasks), capped at +20
-  // Budget bonus/penalty capped to ±20 based on spend vs sum of budgets for that employee’s tasks in range
+  // +10 per on-time completion (no SLA breach)
+  // −5 per SLA breach (NO cap)
+  // +1 per product unit worked (capped at +20)
+  // ± up to 20 for budget under/over vs total budget of their tasks
   const eom = useMemo(() => {
     const byAssignee = {};
     // prepare budgets & product units per assignee
@@ -324,6 +325,7 @@ export default function Admin() {
     const rows = Object.values(byAssignee).map(s => {
       const base = s.completed * 10;
       const ontime = s.onTime * 10;
+      const breachPenalty = -(s.breaches * 5); // NO CAP
       const productBonus = Math.min(20, Math.max(0, s.productUnits * 1)); // +1 per unit, capped at +20
       let budgetBonus = 0;
       if (s.budget > 0) {
@@ -337,10 +339,14 @@ export default function Admin() {
       } else {
         if (s.spend > 0) budgetBonus = -10;
       }
-      const score = Math.round(base + ontime + productBonus + budgetBonus);
+      const score = Math.round(base + ontime + breachPenalty + productBonus + budgetBonus);
       return { ...s, score };
     }).sort((a,b)=> b.score - a.score);
-    return { rows, winner: rows[0] || null };
+
+    const winner = rows[0] || null;
+    const top3 = rows.slice(0, Math.min(3, rows.length));
+    const low3 = rows.slice(-Math.min(3, rows.length)).reverse(); // worst first
+    return { rows, winner, top3, low3 };
   }, [tasksInRange, expensesInRange, tasksById]);
 
   // ---- Tasks list + Edit/Delete flow ----
@@ -544,11 +550,37 @@ export default function Admin() {
                 <strong>Score:</strong> {eom.winner.score} &nbsp;|&nbsp;
                 <strong>Completed:</strong> {eom.winner.completed} &nbsp;|&nbsp;
                 <strong>On-time:</strong> {eom.winner.onTime} &nbsp;|&nbsp;
+                <strong>SLA breaches:</strong> {eom.winner.breaches} &nbsp;|&nbsp;
                 <strong>Products worked:</strong> {eom.winner.productUnits} &nbsp;|&nbsp;
                 <strong>Spend/Budget:</strong> {ru(eom.winner.spend)} / {ru(eom.winner.budget)}
               </div>
+
+              {/* Top & Low performers */}
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, margin:"8px 0 12px"}}>
+                <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
+                  <div style={{fontWeight:700, marginBottom:6}}>Top 3 performers</div>
+                  <ol style={{margin:0, paddingLeft:18}}>
+                    {eom.top3.map((r, i) => (
+                      <li key={`top-${r.assignee}`} style={{margin:"4px 0"}}>
+                        <strong>{r.assignee || "—"}</strong> &nbsp;—&nbsp; Score: {r.score}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+                <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
+                  <div style={{fontWeight:700, marginBottom:6}}>Top 3 low performers</div>
+                  <ol style={{margin:0, paddingLeft:18}}>
+                    {eom.low3.map((r, i) => (
+                      <li key={`low-${r.assignee}`} style={{margin:"4px 0"}}>
+                        <strong>{r.assignee || "—"}</strong> &nbsp;—&nbsp; Score: {r.score}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              </div>
+
               <div style={{overflowX:"auto"}}>
-                <table style={{borderCollapse:"collapse", width:"100%", minWidth:820}}>
+                <table style={{borderCollapse:"collapse", width:"100%", minWidth:860}}>
                   <thead>
                     <tr style={{textAlign:"left", borderBottom:"1px solid #eee"}}>
                       <th style={{padding:"6px 8px"}}>#</th>
@@ -580,7 +612,8 @@ export default function Admin() {
                 </table>
               </div>
               <div style={{fontSize:12, color:"#666", marginTop:6}}>
-                Scoring: +10/completed, +10/on-time, +1/product unit (capped +20), budget bonus/penalty up to ±20 based on spend vs budget.
+                Scoring: +10/completed, +10/on-time, <strong>−5 per SLA breach (no cap)</strong>, +1/product unit (cap +20),
+                and ± up to 20 for budget under/over vs total budget.
               </div>
             </>
           )}
@@ -642,7 +675,7 @@ export default function Admin() {
                 <li key={p.id || p.productId}>{p.name || p.title || (p.id || p.productId)}{p.sku ? ` — ${p.sku}` : ""}</li>
               ))}
             </ul>
-          )}
+          ))}
         </div>
       </section>
 

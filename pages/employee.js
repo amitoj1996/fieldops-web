@@ -1,346 +1,349 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-function sanitizeName(name) {
-  return name.replace(/\s+/g, "_").replace(/[^a-zA-Z0-9._-]/g, "");
-}
-function ru(n){ return n==null ? "—" : `₹${Number(n).toLocaleString("en-IN",{maximumFractionDigits:2})}`; }
-
-export default function Employee() {
-  const [tenantId] = useState("default");
-  const [employeeId] = useState("emp-001");
-
-  const [tasks, setTasks] = useState([]);
-  const [taskQuery, setTaskQuery] = useState("");
-  const [taskId, setTaskId] = useState("");
-  const selectedTask = useMemo(()=> tasks.find(t=>t.id===taskId) || null, [tasks, taskId]);
-
-  const [events, setEvents] = useState([]);
-
-  // Expense flow
-  const [file, setFile] = useState(null);
-  const [lastFileName, setLastFileName] = useState("");
-  const [expenseId, setExpenseId] = useState(null);
-  const [category, setCategory] = useState("Food");
-  const [editedTotal, setEditedTotal] = useState("");
-  const [lateReason, setLateReason] = useState("");
-  const [ocr, setOcr] = useState(null);
-  const [approval, setApproval] = useState(null);
-  const [currentExpense, setCurrentExpense] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [expenses, setExpenses] = useState([]);
-
+function useAuth() {
+  const [me, setMe] = useState(null);
   useEffect(() => {
     (async () => {
-      const j = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
-      setTasks(Array.isArray(j) ? j.filter(t => t.status !== "COMPLETED") : []);
+      try {
+        const res = await fetch("/.auth/me");
+        const j = await res.json();
+        setMe(j?.clientPrincipal || null);
+      } catch {
+        setMe(null);
+      }
     })();
   }, []);
+  return me;
+}
 
-  useEffect(() => { taskId ? loadEvents() : setEvents([]); loadTaskExpenses(); }, [taskId]);
+function ru(n){ return n==null ? "—" : `₹${Number(n).toLocaleString("en-IN",{maximumFractionDigits:2})}`; }
 
-  async function loadEvents() {
-    if (!taskId) return;
-    const j = await fetch(`/api/tasks/events?taskId=${encodeURIComponent(taskId)}&tenantId=${tenantId}`).then(r=>r.json());
-    const arr = Array.isArray(j) ? [...j].sort((a,b)=> new Date(b.ts) - new Date(a.ts)) : [];
-    setEvents(arr);
-  }
-
-  const filteredTasks = useMemo(()=>{
-    const q = taskQuery.trim().toLowerCase();
-    if (!q) return tasks;
-    return tasks.filter(t => (t.title||"").toLowerCase().includes(q) || (t.assignee||"").toLowerCase().includes(q) || (t.id||"").toLowerCase().includes(q));
-  }, [tasks, taskQuery]);
-
-  const hasCheckIn  = events.some(e => e.eventType === "CHECK_IN");
-  const hasCheckOut = events.some(e => e.eventType === "CHECK_OUT");
-
-  function onFileChange(f) {
-    setFile(f || null);
-    if (f) {
-      const safe = sanitizeName(f.name);
-      setLastFileName(safe);
-      setExpenseId(null);
-      setOcr(null); setApproval(null); setCurrentExpense(null); setEditedTotal("");
-    } else {
-      setLastFileName("");
-      setExpenseId(null);
-      setCurrentExpense(null);
+function remainingByCategory(task, expenses) {
+  const limits = task?.expenseLimits || {Hotel:1000, Food:1000, Travel:1000, Other:1000};
+  const rem = {Hotel: limits.Hotel||0, Food: limits.Food||0, Travel: limits.Travel||0, Other: limits.Other||0};
+  for (const e of expenses||[]) {
+    const st = e?.approval?.status;
+    if (st === "REJECTED") continue;
+    const cat = e?.category || "Other";
+    const amt = Number(e?.editedTotal ?? e?.total ?? 0) || 0;
+    // Count PENDING_REVIEW + APPROVED + AUTO_APPROVED toward the cap (mirrors backend logic)
+    if (["PENDING_REVIEW","APPROVED","AUTO_APPROVED", null, ""].includes(st)) {
+      if (rem[cat] == null) rem[cat] = 0;
+      rem[cat] -= amt;
     }
   }
+  Object.keys(rem).forEach(k => { if (rem[k] < 0) rem[k] = 0; });
+  return rem;
+}
 
-  async function getPos() {
-    if (!navigator.geolocation) return {};
+export default function Employee() {
+  const me = useAuth();
+  const [tenantId] = useState("default");
+  const myEmail = (me?.userDetails || "").toLowerCase();
+
+  const [allTasks, setAllTasks] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(true);
+
+  const [selected, setSelected] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [rem, setRem] = useState({Hotel:0,Food:0,Travel:0,Other:0});
+
+  const [uploading, setUploading] = useState(false);
+  const [draft, setDraft] = useState(null); // { blobUrl, filename, merchant, total, date, currency }
+  const fileRef = useRef(null);
+
+  // Expense finalize fields
+  const [category, setCategory] = useState("");
+  const [editedTotal, setEditedTotal] = useState("");
+
+  // Load all tasks (API returns all; we filter client-side by assignee === myEmail)
+  useEffect(() => {
+    (async () => {
+      setTasksLoading(true);
+      try {
+        const j = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
+        setAllTasks(Array.isArray(j) ? j : []);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setTasksLoading(false);
+      }
+    })();
+  }, [tenantId, me?.userDetails]);
+
+  const myTasks = useMemo(() => {
+    if (!myEmail) return [];
+    return (allTasks || []).filter(t => (t.assignee || "").toLowerCase() === myEmail);
+  }, [allTasks, myEmail]);
+
+  async function selectTask(t) {
+    setSelected(t);
+    setDraft(null);
+    setCategory("");
+    setEditedTotal("");
     try {
-      return await new Promise((res)=>navigator.geolocation.getCurrentPosition(
-        p=>res({lat:p.coords.latitude,lng:p.coords.longitude}), ()=>res({})
-      ));
-    } catch { return {}; }
+      const ex = await fetch(`/api/expenses/byTask?taskId=${encodeURIComponent(t.id)}&tenantId=${tenantId}`).then(r=>r.json());
+      const arr = Array.isArray(ex) ? ex : [];
+      setExpenses(arr);
+      const ev = await fetch(`/api/tasks/events?taskId=${encodeURIComponent(t.id)}&tenantId=${tenantId}`).then(r=>r.json());
+      setEvents(Array.isArray(ev) ? ev : []);
+      setRem(remainingByCategory(t, arr));
+    } catch (e) {
+      console.error(e);
+    }
   }
 
   async function checkIn() {
-    if (!taskId) return alert("Pick a Task");
-    const pos = await getPos();
-    const r = await fetch("/api/tasks/checkin", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({tenantId, taskId, employeeId, ...pos}) });
+    if (!selected) return;
+    const r = await fetch(`/api/tasks/checkin`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ tenantId, taskId: selected.id })
+    });
     const j = await r.json();
-    if (!r.ok) return alert(j.error||"check-in failed");
-    await loadEvents();
-    if (j.idempotent) alert("Already checked in.");
+    if (!r.ok) return alert(j.error || "Check-in failed");
+    await selectTask(selected);
   }
 
   async function checkOut() {
-    if (!taskId) return alert("Pick a Task");
-    const pos = await getPos();
-    const r = await fetch("/api/tasks/checkout", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({tenantId, taskId, reason: lateReason || undefined, employeeId, ...pos}) });
-    const j = await r.json();
-    if (!r.ok) return alert(j.error||"check-out failed");
-    await loadEvents();
-    if (j.idempotent) alert("Already checked out.");
+    if (!selected) return;
+    // Attempt checkout without reason; if SLA breached server will demand a reason
+    let body = { tenantId, taskId: selected.id };
+    let r = await fetch(`/api/tasks/checkout`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+    if (r.status === 400) {
+      const j = await r.json();
+      if (/reason required/i.test(j.error || "")) {
+        const reason = window.prompt("SLA appears breached. Please enter a reason:");
+        if (!reason) return; // cancelled
+        body = { tenantId, taskId: selected.id, reason };
+        r = await fetch(`/api/tasks/checkout`, {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify(body)
+        });
+      }
+    }
+    const j2 = await r.json();
+    if (!r.ok) return alert(j2.error || "Checkout failed");
+    await selectTask(selected);
   }
 
-  function totalOrUndefined() { return editedTotal !== "" ? Number(editedTotal) : undefined; }
+  async function onChooseFile(ev) {
+    if (!selected) return alert("Select a task first.");
+    const f = ev.target.files?.[0];
+    if (!f) return;
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    if (!taskId) return alert("Pick a Task");
+    const safeName = `${Date.now()}_${f.name.replace(/[^a-zA-Z0-9._-]/g,"-")}`;
+    setUploading(true);
     try {
-      setLoading(true); setApproval(null);
+      // get SAS to upload
+      const sas = await fetch(`/api/receipts/sas?taskId=${encodeURIComponent(selected.id)}&filename=${encodeURIComponent(safeName)}`).then(r=>r.json());
+      if (!sas?.uploadUrl) throw new Error("Could not get upload URL");
 
-      // Update existing expense
-      if (expenseId) {
-        const finRes = await fetch(`/api/expenses/finalize`, {
-          method:"POST", headers:{"Content-Type":"application/json"},
-          body: JSON.stringify({ tenantId, expenseId, category, total: totalOrUndefined(), submittedBy: employeeId, comment: "Edited total" })
-        });
-        const fin = await finRes.json();
-        if (!finRes.ok) throw new Error(fin.error || "Finalize error");
-        setApproval(fin.approval);
-        setCurrentExpense(fin);
-        await loadTaskExpenses();
-        return;
-      }
+      // upload to blob
+      const put = await fetch(sas.uploadUrl, { method:"PUT", headers: {"x-ms-blob-type":"BlockBlob"}, body: f });
+      if (!put.ok) throw new Error(`Blob upload failed (HTTP ${put.status})`);
 
-      // First submit: upload + OCR + finalize
-      if (!file) return alert("Choose a receipt file first");
-      const sas = await fetch(`/api/receipts/sas?taskId=${encodeURIComponent(taskId)}&filename=${encodeURIComponent(lastFileName)}`).then(r=>r.json());
-      if (sas.error) throw new Error(sas.error);
+      // OCR
+      const ocr = await fetch(`/api/receipts/ocr`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ tenantId, taskId: selected.id, filename: safeName, save: true })
+      }).then(r=>r.json());
 
-      const put = await fetch(sas.uploadUrl, { method:"PUT", headers:{ "x-ms-blob-type":"BlockBlob" }, body:file });
-      if (!put.ok) throw new Error("Upload failed");
-
-      const ocrRes = await fetch(`/api/receipts/ocr`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ taskId, filename: lastFileName, tenantId, save: true })
+      const info = ocr?.ocr || {};
+      const detectedTotal = info?.total ?? "";
+      setDraft({
+        blobUrl: ocr?.blobPath || sas?.blobUrl,
+        filename: safeName,
+        merchant: info?.merchant || "",
+        total: detectedTotal,
+        date: info?.date || "",
+        currency: info?.currency || ""
       });
-      const ocrJson = await ocrRes.json();
-      if (!ocrRes.ok) throw new Error(ocrJson.error||"OCR error");
-
-      setOcr(ocrJson.ocr || null);
-      const exp = ocrJson.saved || ocrJson.existing || null;
-      if (!exp || !exp.id) throw new Error("Expense upsert failed");
-      setExpenseId(exp.id);
-
-      const finRes = await fetch(`/api/expenses/finalize`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ tenantId, expenseId: exp.id, category, total: totalOrUndefined() ?? exp.total, submittedBy: employeeId, comment: "Submitted from employee portal" })
-      });
-      const fin = await finRes.json();
-      if (!finRes.ok) throw new Error(fin.error||"Finalize error");
-      setApproval(fin.approval);
-      setCurrentExpense(fin);
-      await loadTaskExpenses();
-
-    } catch (err) {
-      alert(err.message);
+      setCategory("");
+      setEditedTotal(detectedTotal ?? "");
+    } catch (e) {
+      console.error(e);
+      alert(e.message || "Upload or OCR failed");
     } finally {
-      setLoading(false);
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
     }
   }
 
-  async function loadTaskExpenses() {
-    if (!taskId) { setExpenses([]); return; }
-    const j = await fetch(`/api/expenses/byTask?taskId=${encodeURIComponent(taskId)}&tenantId=${tenantId}`).then(r=>r.json());
-    setExpenses(Array.isArray(j)?j:[]);
+  async function openReceipt(exp) {
+    try {
+      const filename = exp.blobPath.split("/").pop();
+      const j = await fetch(`/api/receipts/readSas?taskId=${encodeURIComponent(exp.taskId)}&filename=${encodeURIComponent(filename)}&minutes=5`).then(r=>r.json());
+      if (j.readUrl) window.open(j.readUrl, "_blank");
+    } catch (e) {
+      alert("Could not open receipt");
+    }
   }
 
-  async function openReceipt(blobPath) {
-    if (!taskId) return;
-    const filename = blobPath.split("/").pop();
-    const j = await fetch(`/api/receipts/readSas?taskId=${encodeURIComponent(taskId)}&filename=${encodeURIComponent(filename)}&minutes=3`).then(r=>r.json());
-    if (j.readUrl) window.open(j.readUrl,"_blank");
-  }
+  async function submitExpense() {
+    if (!selected || !draft) return;
+    if (!category) return alert("Please choose a category");
+    const amount = Number(editedTotal || 0);
+    if (!Number.isFinite(amount) || amount <= 0) return alert("Enter a valid total");
 
-  function startEditingRejected(e) {
-    setExpenseId(e.id);
-    setCategory(e.category || "Food");
-    const base = e.editedTotal ?? e.total;
-    setEditedTotal(base != null ? String(base) : "");
-    setOcr(null); setApproval(e.approval || null);
-    setCurrentExpense(e);
-    setFile(null); setLastFileName("");
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
+    const body = {
+      tenantId,
+      taskId: selected.id,
+      blobPath: draft.blobUrl,
+      category,
+      total: amount
+    };
 
-  // ---------- Remaining-only budget ----------
-  const limits = selectedTask?.expenseLimits || {Hotel:1000, Food:1000, Travel:1000, Other:1000};
-  const remaining = useMemo(() => {
-    const cats = ["Hotel","Food","Travel","Other"];
-    const spentByCat = Object.create(null);
-    let overallSpent = 0;
-
-    (expenses || []).forEach(e => {
-      if (e.taskId !== taskId) return;
-      const status = e.approval?.status;
-      if (status === "REJECTED") return; // rejected doesn't consume budget
-      const cat = cats.includes(e.category) ? e.category : "Other";
-      const amt = Number(e.editedTotal ?? e.total) || 0;
-      spentByCat[cat] = (spentByCat[cat] || 0) + amt;
-      overallSpent += amt;
+    const r = await fetch(`/api/expenses/finalize`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(body)
     });
+    const j = await r.json();
+    if (!r.ok) return alert(j.error || "Submit failed");
 
-    const per = cats.map(cat => {
-      const limit = Number(limits[cat] ?? (cat==="Other" ? 1000 : 0)) || 0;
-      const spent = Number(spentByCat[cat] || 0);
-      return { cat, remaining: limit - spent };
-    });
-
-    const overallLimit = cats.reduce((s,k)=> s + (Number(limits[k]||0)), 0);
-    return { per, overallRemaining: overallLimit - overallSpent };
-  }, [expenses, taskId, limits]);
+    // refresh
+    setDraft(null);
+    setCategory("");
+    setEditedTotal("");
+    await selectTask(selected);
+    const status = j?.approval?.status;
+    if (status === "AUTO_APPROVED") {
+      alert("Expense auto-approved (within remaining).");
+    } else if (status === "PENDING_REVIEW") {
+      alert("Expense submitted for review (exceeds remaining).");
+    }
+  }
 
   return (
-    <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto", maxWidth:900}}>
+    <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto"}}>
       <h1>Employee portal</h1>
+      <div style={{marginBottom:12, color:"#444"}}>
+        Signed in as: <strong>{me?.userDetails || "—"}</strong>
+      </div>
 
-      {/* Task picker */}
-      <section style={{display:"grid", gap:10, margin:"1rem 0"}}>
-        <div style={{display:"grid", gridTemplateColumns:"2fr 2fr auto", gap:8, alignItems:"end"}}>
-          <label>Search task
-            <input value={taskQuery} onChange={e=>setTaskQuery(e.target.value)} placeholder="type name / assignee / id"/>
-          </label>
-          <label>Task
-            <select value={taskId} onChange={e=>{ setTaskId(e.target.value); setEvents([]); }}>
-              <option value="">— Select a task —</option>
-              {filteredTasks.map(t=>(
-                <option key={t.id} value={t.id}>
-                  {(t.title || "(untitled)")} {t.assignee ? `• ${t.assignee}` : ""} {t.slaEnd ? `• due ${new Date(t.slaEnd).toLocaleString()}` : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button onClick={()=>{ if (taskId) loadEvents(); }}>Refresh log</button>
+      <section style={{display:"grid", gridTemplateColumns:"1fr 2fr", gap:16}}>
+        <div>
+          <h2 style={{marginTop:0}}>My tasks</h2>
+          {tasksLoading ? <p>Loading…</p> :
+            (myTasks.length === 0 ? <p>No tasks assigned.</p> :
+              <ul>
+                {myTasks.map(t => (
+                  <li key={t.id} style={{margin:"0.5rem 0"}}>
+                    <button onClick={() => selectTask(t)} style={{display:"block", width:"100%", textAlign:"left"}}>
+                      <strong>{t.title || t.id}</strong>
+                      <div style={{fontSize:12, color:"#555"}}>
+                        Status: {t.status} • SLA: {t.slaStart ? new Date(t.slaStart).toLocaleString() : "—"} → {t.slaEnd ? new Date(t.slaEnd).toLocaleString() : "—"}
+                      </div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+          )}
         </div>
 
-        <div style={{display:"flex", gap:8}}>
-          <button onClick={checkIn} disabled={!taskId || hasCheckIn}>Check in</button>
-          <input placeholder="late reason (only if late)" value={lateReason} onChange={e=>setLateReason(e.target.value)} style={{flex:1}}/>
-          <button onClick={checkOut} disabled={!taskId || !hasCheckIn || hasCheckOut}>Check out</button>
+        <div>
+          {!selected ? (
+            <p>Select a task to view and update.</p>
+          ) : (
+            <>
+              <h2 style={{marginTop:0}}>{selected.title || selected.id}</h2>
+
+              {/* Remaining budget */}
+              <div style={{border:"1px solid #e6e6e6", borderRadius:8, padding:12, background:"#fafafa", marginBottom:12}}>
+                <strong>Remaining budget</strong>
+                <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, marginTop:8}}>
+                  {["Hotel","Food","Travel","Other"].map(k => (
+                    <div key={k} style={{padding:8, border:"1px solid #eee", borderRadius:6}}>
+                      <div style={{fontSize:12, color:"#666"}}>{k}</div>
+                      <div style={{fontWeight:600}}>{ru(rem[k])}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Check in/out */}
+              <div style={{display:"flex", gap:8, marginBottom:12}}>
+                <button onClick={checkIn}>Check in</button>
+                <button onClick={checkOut}>Check out</button>
+              </div>
+
+              {/* Timeline */}
+              <div style={{marginBottom:16}}>
+                <h3>Timeline</h3>
+                <ul>
+                  {events.map(ev => (
+                    <li key={ev.id} style={{margin:"0.5rem 0"}}>
+                      {ev.eventType} — {new Date(ev.ts).toLocaleString()} {ev.late ? " (late)" : ""} {ev.reason ? `— ${ev.reason}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              {/* Expenses list */}
+              <div style={{marginBottom:16}}>
+                <h3>My expenses</h3>
+                {expenses.length === 0 ? <p>None yet.</p> : (
+                  <ul>
+                    {expenses.map(e => (
+                      <li key={e.id} style={{margin:"0.5rem 0"}}>
+                        <div><strong>{e.category || "(uncategorized)"}:</strong> {ru(e.editedTotal ?? e.total)} — {e.approval?.status || "—"}</div>
+                        <div style={{fontSize:12, color:"#555"}}>{new Date(e.createdAt).toLocaleString()} — {e.merchant || "Merchant"}</div>
+                        <div style={{display:"flex", gap:8, marginTop:6}}>
+                          <button onClick={() => openReceipt(e)}>Open receipt</button>
+                          {e.approval?.status === "REJECTED" && e.approval?.note && (
+                            <span style={{fontSize:12, color:"#b22"}}>Admin note: {e.approval.note}</span>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {/* Upload + OCR + finalize */}
+              <div style={{borderTop:"1px dashed #ddd", paddingTop:12}}>
+                <h3>Add a new expense</h3>
+                <input type="file" accept="image/*,application/pdf" ref={fileRef} onChange={onChooseFile} disabled={uploading}/>
+                {uploading && <div style={{fontSize:12, color:"#666"}}>Uploading & OCR…</div>}
+
+                {draft && (
+                  <div style={{marginTop:12, border:"1px solid #eee", borderRadius:8, padding:12}}>
+                    <div style={{fontSize:12, color:"#666"}}>Detected: {draft.merchant ? `${draft.merchant} • ` : ""}{draft.date || ""} {draft.currency ? `• ${draft.currency}` : ""}</div>
+                    <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginTop:8, maxWidth:700}}>
+                      <label>Category
+                        <select value={category} onChange={e=>setCategory(e.target.value)}>
+                          <option value="">— Select —</option>
+                          <option>Hotel</option>
+                          <option>Food</option>
+                          <option>Travel</option>
+                          <option>Other</option>
+                        </select>
+                      </label>
+                      <label>Edited total (₹)
+                        <input type="number" step="0.01" value={editedTotal} onChange={e=>setEditedTotal(e.target.value)} />
+                      </label>
+                      <div style={{display:"flex", alignItems:"end"}}>
+                        <button onClick={submitExpense}>Submit expense</button>
+                      </div>
+                    </div>
+                    <div style={{fontSize:12, color:"#666", marginTop:6}}>
+                      If the edited total differs from OCR, admin will see it as an override. If your amount exceeds the <em>remaining</em> for the category, it will go to review instead of auto-approving.
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </section>
-
-      {/* ---------- Assigned products ---------- */}
-      {selectedTask && (
-        <section style={{border:"1px solid #ddd", borderRadius:8, padding:12, marginBottom:16, background:"#fafafa"}}>
-          <h2 style={{margin:"0 0 8px"}}>Assigned products</h2>
-          {Array.isArray(selectedTask.items) && selectedTask.items.length>0 ? (
-            <ul>
-              {selectedTask.items.map(it=>(
-                <li key={it.productId}>
-                  <strong>{it.name}</strong> {it.sku ? `• ${it.sku}` : ""} — Qty: {it.qty}
-                </li>
-              ))}
-            </ul>
-          ) : <p>None for this task.</p>}
-
-          {/* Remaining budget (overall + per category) */}
-          <div style={{marginTop:12}}>
-            <div style={{marginBottom:6}}>Overall remaining: <strong style={{color: remaining.overallRemaining < 0 ? "#c62828" : "#2e7d32"}}>{ru(remaining.overallRemaining)}</strong></div>
-            <div style={{display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:10}}>
-              {remaining.per.map(row => (
-                <div key={row.cat} style={{border:"1px solid #eee", borderRadius:8, padding:"10px 12px"}}>
-                  <div style={{display:"flex", justifyContent:"space-between"}}>
-                    <span><strong>{row.cat}</strong></span>
-                    <span style={{color: row.remaining < 0 ? "#c62828" : "#2e7d32"}}>{ru(row.remaining)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Expense form */}
-      <form onSubmit={handleSubmit} style={{display:"grid", gap:12, margin:"1rem 0"}}>
-        <div style={{display:"flex", gap:8, alignItems:"center"}}>
-          <label style={{flex:1}}>Receipt file
-            <input type="file" onChange={e=>onFileChange(e.target.files?.[0]||null)} accept=".jpg,.jpeg,.png,.pdf"/>
-          </label>
-          <button type="button" onClick={()=>{ setFile(null); setLastFileName(""); setExpenseId(null); setOcr(null); setApproval(null); setCurrentExpense(null); setEditedTotal(""); }} disabled={!file && !expenseId}>
-            Reset file
-          </button>
-        </div>
-        <label>Category
-          <select value={category} onChange={e=>setCategory(e.target.value)}>
-            <option>Food</option><option>Hotel</option><option>Travel</option><option>Other</option>
-          </select>
-        </label>
-        <label>Edited total (optional)
-          <input type="number" step="0.01" value={editedTotal} onChange={e=>setEditedTotal(e.target.value)} placeholder="leave empty to keep OCR total"/>
-        </label>
-        <button disabled={loading || !taskId || (!expenseId && !file)} style={{padding:"0.6rem 1rem"}}>
-          {loading ? "Submitting…" : (expenseId ? "Update expense" : "Submit expense")}
-        </button>
-        {expenseId && <div style={{fontSize:12, color:"#555"}}>Editing existing expense: <code>{expenseId}</code></div>}
-      </form>
-
-      {/* Feedback only when REJECTED */}
-      {currentExpense?.approval?.status === "REJECTED" && currentExpense?.approval?.note && (
-        <div style={{border:"1px solid #f4c", background:"#fff6ff", padding:"1rem", borderRadius:8, marginBottom:"1rem"}}>
-          <strong>Admin feedback:</strong>
-          <div style={{marginTop:6}}>{currentExpense.approval.note}</div>
-        </div>
-      )}
-
-      {ocr && <div style={{border:"1px solid #ddd", padding:"1rem", borderRadius:8, marginBottom:"1rem"}}>
-        <strong>OCR (raw)</strong>
-        <pre style={{whiteSpace:"pre-wrap"}}>{JSON.stringify(ocr, null, 2)}</pre>
-      </div>}
-      {approval && <div style={{border:"1px solid #ddd", padding:"1rem", borderRadius:8, marginBottom:"1rem"}}>
-        <strong>Approval</strong>
-        <pre style={{whiteSpace:"pre-wrap"}}>{JSON.stringify(approval, null, 2)}</pre>
-      </div>}
-
-      <hr/>
-      <h2>My task expenses</h2>
-      <button onClick={loadTaskExpenses} disabled={!taskId}>Refresh list</button>
-      <ul>
-        {expenses.map(e=>(
-          <li key={e.id} style={{margin:"0.75rem 0", border:"1px solid #eee", padding:"8px", borderRadius:8}}>
-            <div><strong>{e.category || "(uncategorized)"}:</strong> ₹{e.editedTotal ?? e.total} — {e.approval?.status || "—"}</div>
-            <div style={{fontSize:13, color:"#555"}}>{new Date(e.createdAt).toLocaleString()}</div>
-            <div style={{display:"flex", gap:8, marginTop:6}}>
-              <button onClick={()=>openReceipt(e.blobPath)}>Open receipt</button>
-              {e.approval?.status === "REJECTED" && (
-                <button onClick={()=>startEditingRejected(e)}>Edit &amp; resubmit</button>
-              )}
-            </div>
-            {e.approval?.status === "REJECTED" && e.approval?.note && (
-              <div style={{marginTop:6, fontSize:13, color:"#b22"}}>
-                Admin feedback: {e.approval.note}
-              </div>
-            )}
-          </li>
-        ))}
-      </ul>
-
-      <hr/>
-      <h2>Logs (timeline)</h2>
-      <ul>
-        {events.map(ev=>(
-          <li key={ev.id} style={{margin:"0.5rem 0"}}>
-            {ev.eventType} — {new Date(ev.ts).toLocaleString()} {ev.late ? " (late)" : ""} {ev.reason ? `— ${ev.reason}` : ""}
-          </li>
-        ))}
-      </ul>
     </main>
   );
 }

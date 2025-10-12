@@ -40,6 +40,16 @@ export default function Admin() {
   const me = useAuth();
   const [tenantId] = useState("default");
 
+  // --- Reports ---
+  const [reportFrom, setReportFrom] = useState("");
+  const [reportTo, setReportTo] = useState("");
+  function downloadReport() {
+    let url = `/api/report/csv?tenantId=${tenantId}`;
+    if (reportFrom) url += `&fromDate=${reportFrom}`;
+    if (reportTo)   url += `&toDate=${reportTo}`;
+    window.open(url, "_blank", "noopener");
+  }
+
   // Tasks + lookup
   const [tasks, setTasks] = useState([]);
   const tasksById = useMemo(() => {
@@ -321,7 +331,6 @@ export default function Admin() {
         alert(j?.error || `Delete failed (HTTP ${r.status})`);
         return;
       }
-      // j: { ok, tenantId, taskId, events, expenses, cascade }
       await loadTasks();
       closeDelete();
       alert(`Deleted task ${deleteTarget.title || deleteTarget.id}\nRemoved events: ${j.events||0}, expenses: ${j.expenses||0}`);
@@ -356,6 +365,23 @@ export default function Admin() {
     <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto"}}>
       <h1>Admin</h1>
       <div style={{marginBottom:12, color:"#444"}}>Signed in as: <strong>{me?.userDetails || "—"}</strong></div>
+
+      {/* Reports */}
+      <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
+        <h2 style={{marginTop:0}}>Reports</h2>
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr auto", gap:8, alignItems:"end", maxWidth:600}}>
+          <label>From (date)
+            <input type="date" value={reportFrom} onChange={e=>setReportFrom(e.target.value)} />
+          </label>
+          <label>To (date)
+            <input type="date" value={reportTo} onChange={e=>setReportTo(e.target.value)} />
+          </label>
+          <button onClick={downloadReport}>Download CSV</button>
+        </div>
+        <div style={{fontSize:12, color:"#666", marginTop:6}}>
+          Leave fields blank for an all-time report. “To” is inclusive in the CSV (we handle it server-side).
+        </div>
+      </section>
 
       {/* Products admin */}
       <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
@@ -514,7 +540,7 @@ export default function Admin() {
         )}
       </section>
 
-      {/* Pending review queue */}
+      {/* Expenses pending review */}
       <section style={{border:"1px solid #eee", borderRadius:8, padding:12}}>
         <h2 style={{marginTop:0}}>Expenses pending review</h2>
         {loadingPending ? <p>Loading…</p> :
@@ -769,11 +795,6 @@ export default function Admin() {
           </div>
         </div>
       )}
-
-      {/* Quick report */}
-      <section style={{marginTop:16}}>
-        <a href={`/api/report/csv?tenantId=${tenantId}`} target="_blank" rel="noreferrer">Download CSV report</a>
-      </section>
     </main>
   );
 }

@@ -112,19 +112,24 @@ export default function Admin() {
   });
   const [savingEdit, setSavingEdit] = useState(false);
 
+  // Delete modal state
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [cascadeDelete, setCascadeDelete] = useState(true);
+  const [deleting, setDeleting] = useState(false);
+
   // Product create (admin section)
   const [newProduct, setNewProduct] = useState({ name:"", sku:"" });
   const [savingProduct, setSavingProduct] = useState(false);
 
   // Load tasks + expenses
-  useEffect(() => {
-    (async () => {
-      try {
-        const t = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
-        setTasks(Array.isArray(t)? t : []);
-      } catch(e){ console.error(e); }
-    })();
-  }, [tenantId]);
+  async function loadTasks() {
+    try {
+      const t = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
+      setTasks(Array.isArray(t)? t : []);
+    } catch(e){ console.error(e); }
+  }
+  useEffect(() => { loadTasks(); }, [tenantId]);
 
   async function loadPending() {
     setLoadingPending(true);
@@ -195,8 +200,7 @@ export default function Admin() {
     const r = await fetch(`/api/tasks`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
     const j = await r.json();
     if (!r.ok) return alert(j.error || "Create task failed");
-    const t = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
-    setTasks(Array.isArray(t)? t : []);
+    await loadTasks();
     setNewTask({
       title: "", type: "data_collection", assignee: "",
       slaStartDate: "", slaStartTime: "", slaEndDate: "", slaEndTime: "",
@@ -206,7 +210,7 @@ export default function Admin() {
     alert("Task created");
   }
 
-  // ---- Tasks list + Edit flow ----
+  // ---- Tasks list + Edit/Delete flow ----
   const [taskSearch, setTaskSearch] = useState("");
   const filteredTasks = useMemo(() => {
     const q = (taskSearch || "").toLowerCase();
@@ -243,21 +247,18 @@ export default function Admin() {
   function closeEdit() {
     setEditOpen(false); setEditId(null);
   }
-  function updateEditItem(idx, patch) {
-    setEditForm(prev => {
-      const arr = prev.items.slice();
-      arr[idx] = { ...arr[idx], ...patch };
-      return { ...prev, items: arr };
-    });
+
+  function openDelete(t) {
+    setDeleteTarget(t);
+    setCascadeDelete(true);
+    setDeleteOpen(true);
   }
-  function addEditItem() {
-    setEditForm(prev => ({ ...prev, items: [...(prev.items||[]), {productId:"", quantity:1}] }));
-  }
-  function removeEditItem(idx) {
-    setEditForm(prev => ({ ...prev, items: (prev.items||[]).filter((_,i)=>i!==idx) }));
+  function closeDelete() {
+    setDeleteOpen(false);
+    setDeleteTarget(null);
+    setCascadeDelete(true);
   }
 
-  // UPDATED: uses POST /api/tasks/update (no PUT)
   async function saveEdit() {
     if (!editId) return;
     setSavingEdit(true);
@@ -292,14 +293,42 @@ export default function Admin() {
         alert(j.error || `Update failed (HTTP ${r.status})`);
         return;
       }
-      const t = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
-      setTasks(Array.isArray(t)? t : []);
+      await loadTasks();
       closeEdit();
       alert("Task updated");
     } catch (e) {
       alert(e.message || "Update failed");
     } finally {
       setSavingEdit(false);
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      const r = await fetch("/api/tasks/delete", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          tenantId,
+          taskId: deleteTarget.id,
+          cascade: !!cascadeDelete
+        })
+      });
+      const j = await r.json().catch(()=>({}));
+      if (!r.ok) {
+        alert(j?.error || `Delete failed (HTTP ${r.status})`);
+        return;
+      }
+      // j: { ok, tenantId, taskId, events, expenses, cascade }
+      await loadTasks();
+      closeDelete();
+      alert(`Deleted task ${deleteTarget.title || deleteTarget.id}\nRemoved events: ${j.events||0}, expenses: ${j.expenses||0}`);
+    } catch(e) {
+      alert(e.message || "Delete failed");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -444,7 +473,7 @@ export default function Admin() {
         </form>
       </section>
 
-      {/* Tasks list with Edit */}
+      {/* Tasks list with Edit + Delete */}
       <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
         <h2 style={{marginTop:0}}>Tasks</h2>
         <div style={{marginBottom:8}}>
@@ -473,8 +502,9 @@ export default function Admin() {
                       {(t.slaStart ? new Date(t.slaStart).toLocaleString() : "—")} → {(t.slaEnd ? new Date(t.slaEnd).toLocaleString() : "—")}
                     </td>
                     <td style={{padding:"8px"}}>{Array.isArray(t.items) ? t.items.length : 0}</td>
-                    <td style={{padding:"8px"}}>
+                    <td style={{padding:"8px", display:"flex", gap:8}}>
                       <button onClick={()=>openEdit(t)}>Edit</button>
+                      <button style={{background:"#fff0f0", border:"1px solid #f2b5b5", color:"#8a0b0b"}} onClick={()=>openDelete(t)}>Delete</button>
                     </td>
                   </tr>
                 ))}
@@ -614,7 +644,7 @@ export default function Admin() {
         }
       </section>
 
-      {/* Edit Modal (includes products) */}
+      {/* Edit Modal */}
       {editOpen && (
         <div style={{
           position:"fixed", inset:0, background:"rgba(0,0,0,0.35)",
@@ -680,7 +710,9 @@ export default function Admin() {
                 {(editForm.items || []).map((row, idx) => (
                   <div key={idx} style={{display:"grid", gridTemplateColumns:"3fr 1fr auto", gap:8, alignItems:"end", marginBottom:8}}>
                     <label>Product
-                      <select value={row.productId} onChange={e=>updateEditItem(idx, {productId: e.target.value})}>
+                      <select value={row.productId} onChange={e=>setEditForm(prev=>{
+                        const a=prev.items.slice(); a[idx]={...a[idx], productId: e.target.value}; return {...prev, items:a};
+                      })}>
                         <option value="">— Select —</option>
                         {products.map(p => (
                           <option key={p.id || p.productId} value={p.id || p.productId}>
@@ -691,18 +723,48 @@ export default function Admin() {
                     </label>
                     <label>Qty
                       <input type="number" min="1" step="1" value={row.quantity}
-                             onChange={e=>updateEditItem(idx, {quantity: Number(e.target.value || 1)})}/>
+                             onChange={e=>setEditForm(prev=>{
+                               const a=prev.items.slice(); a[idx]={...a[idx], quantity:Number(e.target.value||1)}; return {...prev, items:a};
+                             })}/>
                     </label>
-                    <button onClick={()=>removeEditItem(idx)}>Remove</button>
+                    <button onClick={()=>setEditForm(prev=>({...prev, items:(prev.items||[]).filter((_,i)=>i!==idx)}))}>Remove</button>
                   </div>
                 ))}
-                <button onClick={addEditItem}>Add product</button>
+                <button onClick={()=>setEditForm(prev=>({...prev, items:[...(prev.items||[]), {productId:"", quantity:1}]}))}>Add product</button>
               </div>
             </div>
 
             <div style={{display:"flex", gap:8, justifyContent:"flex-end", marginTop:16}}>
               <button onClick={closeEdit}>Cancel</button>
               <button onClick={saveEdit} disabled={savingEdit}>{savingEdit ? "Saving…" : "Save changes"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Modal */}
+      {deleteOpen && (
+        <div style={{
+          position:"fixed", inset:0, background:"rgba(0,0,0,0.35)",
+          display:"flex", alignItems:"center", justifyContent:"center", padding:"20px", zIndex:1100
+        }}
+          onClick={closeDelete}
+        >
+          <div style={{background:"#fff", borderRadius:10, padding:16, width:"min(560px, 96vw)"}}
+               onClick={e=>e.stopPropagation()}>
+            <h2 style={{marginTop:0, color:"#8a0b0b"}}>Delete task</h2>
+            <p>Are you sure you want to delete <strong>{deleteTarget?.title || deleteTarget?.id}</strong>?</p>
+            <label style={{display:"flex", alignItems:"center", gap:8}}>
+              <input type="checkbox" checked={cascadeDelete} onChange={e=>setCascadeDelete(e.target.checked)}/>
+              Also delete related <em>expenses</em> and <em>check-in/out events</em> (recommended)
+            </label>
+            <div style={{display:"flex", gap:8, justifyContent:"flex-end", marginTop:16}}>
+              <button onClick={closeDelete}>Cancel</button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting}
+                style={{background:"#fff0f0", border:"1px solid #f2b5b5", color:"#8a0b0b"}}
+              >{deleting ? "Deleting…" : "Delete"}</button>
             </div>
           </div>
         </div>

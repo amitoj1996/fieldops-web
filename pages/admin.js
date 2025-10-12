@@ -283,7 +283,7 @@ export default function Admin() {
     return { rows, winner, topN, lowN, n };
   }, [tasksInRange, expensesInRange, tasksById, eomN]);
 
-  /* ---------- PERFORMANCE (OPI) with adjustable N ---------- */
+  /* ---------- PERFORMANCE (OPI) with adjustable N) ---------- */
   const [opiN, setOpiN] = useState(10);
   function percentile(values, v) {
     const arr = (values || []).slice().sort((a, b) => a - b);
@@ -312,9 +312,7 @@ export default function Admin() {
           breaches: 0,
           budget: 0,
           spend: 0,
-          productUnits: 0,
-          expTotal: 0,
-          expRejected: 0
+          productUnits: 0
         });
       row.assigned += 1;
       row.budget += totalBudget;
@@ -338,14 +336,10 @@ export default function Admin() {
           breaches: 0,
           budget: 0,
           spend: 0,
-          productUnits: 0,
-          expTotal: 0,
-          expRejected: 0
+          productUnits: 0
         };
       const st = e.approval?.status || "";
-      per[a].expTotal += 1;
-      if (st === "REJECTED") per[a].expRejected += 1;
-      else per[a].spend += Number(e.editedTotal ?? e.total ?? 0) || 0;
+      if (st !== "REJECTED") per[a].spend += Number(e.editedTotal ?? e.total ?? 0) || 0;
     }
 
     const base = Object.values(per).map((r) => {
@@ -360,8 +354,6 @@ export default function Admin() {
           : 1;
       const tasksPer30d = (r.assigned / rangeDays) * 30;
       const unitsPer30d = (r.productUnits / rangeDays) * 30;
-      const rejectRate = r.expTotal ? r.expRejected / r.expTotal : 0;
-      const qualityIndex = 1 - rejectRate;
 
       return {
         ...r,
@@ -371,8 +363,7 @@ export default function Admin() {
           breachRate,
           budgetScore,
           tasksPer30d,
-          unitsPer30d,
-          qualityIndex
+          unitsPer30d
         }
       };
     });
@@ -383,7 +374,6 @@ export default function Admin() {
     const budgetArr = base.map((r) => r.metrics.budgetScore);
     const tasksArr = base.map((r) => r.metrics.tasksPer30d);
     const unitsArr = base.map((r) => r.metrics.unitsPer30d);
-    const qualArr = base.map((r) => r.metrics.qualityIndex);
 
     const rows = base
       .map((r) => {
@@ -393,13 +383,13 @@ export default function Admin() {
         const pTasks = percentile(tasksArr, r.metrics.tasksPer30d);
         const pUnits = percentile(unitsArr, r.metrics.unitsPer30d);
         const pProd = (pTasks + pUnits) / 2;
-        const pQual = percentile(qualArr, r.metrics.qualityIndex);
 
+        // OPI weights without "quality" component:
         const score = Math.round(
-          0.3 * pOnTime + 0.2 * pBreachOK + 0.2 * pBudget + 0.2 * pProd + 0.1 * pQual
+          0.35 * pOnTime + 0.25 * pBreachOK + 0.25 * pBudget + 0.15 * pProd
         );
 
-        return { ...r, percentiles: { pOnTime, pBreachOK, pBudget, pProd, pQual }, score };
+        return { ...r, percentiles: { pOnTime, pBreachOK, pBudget, pProd }, score };
       })
       .sort((a, b) => b.score - a.score);
 
@@ -1423,7 +1413,7 @@ function PerformanceTab({ performance, opiN, setOpiN }) {
                       0
                     )} | SLA P:${r.percentiles.pBreachOK.toFixed(0)} | Budget P:${r.percentiles.pBudget.toFixed(
                       0
-                    )} | Prod P:${r.percentiles.pProd.toFixed(0)} | Quality P:${r.percentiles.pQual.toFixed(0)})`}</span>
+                    )} | Prod P:${r.percentiles.pProd.toFixed(0)})`}</span>
                   </li>
                 ))}
               </ol>
@@ -1438,7 +1428,7 @@ function PerformanceTab({ performance, opiN, setOpiN }) {
                       0
                     )} | SLA P:${r.percentiles.pBreachOK.toFixed(0)} | Budget P:${r.percentiles.pBudget.toFixed(
                       0
-                    )} | Prod P:${r.percentiles.pProd.toFixed(0)} | Quality P:${r.percentiles.pQual.toFixed(0)})`}</span>
+                    )} | Prod P:${r.percentiles.pProd.toFixed(0)})`}</span>
                   </li>
                 ))}
               </ol>
@@ -1446,7 +1436,7 @@ function PerformanceTab({ performance, opiN, setOpiN }) {
           </div>
 
           <div style={{ overflowX: "auto" }}>
-            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 960 }}>
+            <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 920 }}>
               <thead>
                 <tr style={{ textAlign: "left", borderBottom: "1px solid #eee" }}>
                   <th style={{ padding: "6px 8px" }}>#</th>
@@ -1459,7 +1449,6 @@ function PerformanceTab({ performance, opiN, setOpiN }) {
                   <th style={{ padding: "6px 8px" }}>Budget</th>
                   <th style={{ padding: "6px 8px" }}>Spend</th>
                   <th style={{ padding: "6px 8px" }}>Units</th>
-                  <th style={{ padding: "6px 8px" }}>Exp rejected%</th>
                 </tr>
               </thead>
               <tbody>
@@ -1477,17 +1466,14 @@ function PerformanceTab({ performance, opiN, setOpiN }) {
                     <td style={{ padding: "6px 8px" }}>{ru(r.budget)}</td>
                     <td style={{ padding: "6px 8px" }}>{ru(r.spend)}</td>
                     <td style={{ padding: "6px 8px" }}>{r.productUnits}</td>
-                    <td style={{ padding: "6px 8px" }}>
-                      {r.expTotal ? ((r.expRejected / r.expTotal) * 100).toFixed(0) : 0}%
-                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
           <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
-            OPI = 0.30·On-time (percentile) + 0.20·SLA (1−breach, percentile) + 0.20·Budget (percentile) + 0.20·Productivity
-            (tasks+units, percentile) + 0.10·Quality (1−reject rate, percentile).
+            OPI = 0.35·On-time (percentile) + 0.25·SLA (1−breach, percentile) + 0.25·Budget (percentile) + 0.15·Productivity
+            (tasks+units, percentile).
           </div>
         </>
       )}

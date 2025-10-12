@@ -16,6 +16,7 @@
     { "route": "/api/products", "methods": ["POST"], "allowedRoles": ["admin"] },
     { "route": "/api/tasks/limits", "allowedRoles": ["admin"] },
     { "route": "/api/tasks", "methods": ["POST"], "allowedRoles": ["admin"] },
+    { "route": "/api/tasks/update", "methods": ["POST"], "allowedRoles": ["admin"] },
 
     { "route": "/api/*", "allowedRoles": ["authenticated", "employee"] }
   ],

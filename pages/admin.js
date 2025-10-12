@@ -70,7 +70,7 @@ export default function Admin() {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [search, setSearch] = useState("");
 
-  // Create task (SLA split + products restored)
+  // Create task (SLA split + products)
   const [newTask, setNewTask] = useState({
     title: "",
     type: "data_collection",
@@ -257,6 +257,7 @@ export default function Admin() {
     setEditForm(prev => ({ ...prev, items: (prev.items||[]).filter((_,i)=>i!==idx) }));
   }
 
+  // UPDATED: uses POST /api/tasks/update (no PUT)
   async function saveEdit() {
     if (!editId) return;
     setSavingEdit(true);
@@ -279,14 +280,16 @@ export default function Admin() {
           .filter(x => (x.productId || "").trim().length > 0)
           .map(x => ({ productId: x.productId, quantity: Number(x.quantity || 1) }))
       };
-      const r = await fetch(`/api/tasks`, {
-        method: "PUT",
-        headers: {"Content-Type":"application/json"},
+
+      const r = await fetch('/api/tasks/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      const j = await r.json().catch(()=>({}));
+      let j = {};
+      try { j = await r.json(); } catch {}
       if (!r.ok) {
-        alert(j?.error || "Update failed (is PUT /api/tasks implemented?)");
+        alert(j.error || `Update failed (HTTP ${r.status})`);
         return;
       }
       const t = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
@@ -320,38 +323,34 @@ export default function Admin() {
     return list;
   }, [expenses, statusFilter, search, tasksById]);
 
-  // Create a product
-  async function saveProduct(ev) {
-    ev.preventDefault();
-    if (!newProduct.name.trim()) {
-      alert("Enter a product name");
-      return;
-    }
-    setSavingProduct(true);
-    try {
-      const body = { tenantId, name: newProduct.name.trim(), sku: newProduct.sku.trim() || undefined };
-      const r = await fetch(`/api/products`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
-      const j = await r.json();
-      if (!r.ok) return alert(j.error || "Could not create product");
-      setNewProduct({ name:"", sku:"" });
-      await loadProducts(); // refresh dropdowns
-      alert("Product created");
-    } catch (e) {
-      alert(e.message || "Could not create product");
-    } finally {
-      setSavingProduct(false);
-    }
-  }
-
   return (
     <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto"}}>
       <h1>Admin</h1>
       <div style={{marginBottom:12, color:"#444"}}>Signed in as: <strong>{me?.userDetails || "—"}</strong></div>
 
-      {/* Quick create product (restored) */}
+      {/* Products admin */}
       <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
         <h2 style={{marginTop:0}}>Products</h2>
-        <form onSubmit={saveProduct} style={{display:"grid", gridTemplateColumns:"2fr 1fr auto", gap:8, alignItems:"end", maxWidth:700}}>
+        <form onSubmit={async (ev) => {
+          ev.preventDefault();
+          const name = (newProduct.name||"").trim();
+          const sku  = (newProduct.sku||"").trim();
+          if (!name) { alert("Enter a product name"); return; }
+          setSavingProduct(true);
+          try {
+            const body = { tenantId, name, sku: sku || undefined };
+            const r = await fetch(`/api/products`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+            const j = await r.json();
+            if (!r.ok) return alert(j.error || "Could not create product");
+            setNewProduct({ name:"", sku:"" });
+            await loadProducts();
+            alert("Product created");
+          } catch (e) {
+            alert(e.message || "Could not create product");
+          } finally {
+            setSavingProduct(false);
+          }
+        }} style={{display:"grid", gridTemplateColumns:"2fr 1fr auto", gap:8, alignItems:"end", maxWidth:700}}>
           <label>Name
             <input value={newProduct.name} onChange={e=>setNewProduct({...newProduct, name:e.target.value})}/>
           </label>
@@ -371,7 +370,7 @@ export default function Admin() {
         </div>
       </section>
 
-      {/* Quick create task (restored products picker) */}
+      {/* Create task */}
       <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
         <h2 style={{marginTop:0}}>Create task</h2>
         <form onSubmit={createTask} style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8}}>
@@ -389,15 +388,12 @@ export default function Admin() {
             </select>
           </label>
 
-          {/* SLA start */}
           <label>SLA start (date)
             <input type="date" value={newTask.slaStartDate} onChange={e=>setNewTask({...newTask, slaStartDate:e.target.value})}/>
           </label>
           <label>SLA start (time)
             <input type="time" value={newTask.slaStartTime} onChange={e=>setNewTask({...newTask, slaStartTime:e.target.value})}/>
           </label>
-
-          {/* SLA end */}
           <label>SLA end (date)
             <input type="date" value={newTask.slaEndDate} onChange={e=>setNewTask({...newTask, slaEndDate:e.target.value})}/>
           </label>
@@ -416,7 +412,6 @@ export default function Admin() {
             ))}
           </div>
 
-          {/* Products rows */}
           <div style={{gridColumn:"1 / -1", marginTop:6}}>
             <strong>Products for this task</strong>
             <div style={{marginTop:6}}>

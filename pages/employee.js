@@ -23,10 +23,9 @@ function remainingByCategory(task, expenses) {
   const rem = {Hotel: limits.Hotel||0, Food: limits.Food||0, Travel: limits.Travel||0, Other: limits.Other||0};
   for (const e of expenses||[]) {
     const st = e?.approval?.status;
-    if (st === "REJECTED") continue;
+    if (st === "REJECTED") continue; // rejected doesn't count toward cap
     const cat = e?.category || "Other";
     const amt = Number(e?.editedTotal ?? e?.total ?? 0) || 0;
-    // Count PENDING_REVIEW + APPROVED + AUTO_APPROVED toward the cap (mirrors backend logic)
     if (["PENDING_REVIEW","APPROVED","AUTO_APPROVED", null, ""].includes(st)) {
       if (rem[cat] == null) rem[cat] = 0;
       rem[cat] -= amt;
@@ -50,14 +49,21 @@ export default function Employee() {
   const [rem, setRem] = useState({Hotel:0,Food:0,Travel:0,Other:0});
 
   const [uploading, setUploading] = useState(false);
-  const [draft, setDraft] = useState(null); // { blobUrl, filename, merchant, total, date, currency }
+  const [draft, setDraft] = useState(null); // new expense draft after OCR
   const fileRef = useRef(null);
 
-  // Expense finalize fields
+  // New expense finalize fields
   const [category, setCategory] = useState("");
   const [editedTotal, setEditedTotal] = useState("");
 
-  // Load all tasks (API returns all; we filter client-side by assignee === myEmail)
+  // EDIT rejected expense
+  const [editExp, setEditExp] = useState(null);
+  const [editCategory, setEditCategory] = useState("");
+  const [editAmount, setEditAmount] = useState("");
+  const [editComment, setEditComment] = useState(""); // reply to admin note
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // Load tasks (then filter to mine)
   useEffect(() => {
     (async () => {
       setTasksLoading(true);
@@ -79,9 +85,8 @@ export default function Employee() {
 
   async function selectTask(t) {
     setSelected(t);
-    setDraft(null);
-    setCategory("");
-    setEditedTotal("");
+    setDraft(null); setCategory(""); setEditedTotal("");
+    setEditExp(null); setEditCategory(""); setEditAmount(""); setEditComment("");
     try {
       const ex = await fetch(`/api/expenses/byTask?taskId=${encodeURIComponent(t.id)}&tenantId=${tenantId}`).then(r=>r.json());
       const arr = Array.isArray(ex) ? ex : [];
@@ -108,7 +113,6 @@ export default function Employee() {
 
   async function checkOut() {
     if (!selected) return;
-    // Attempt checkout without reason; if SLA breached server will demand a reason
     let body = { tenantId, taskId: selected.id };
     let r = await fetch(`/api/tasks/checkout`, {
       method: "POST",
@@ -119,7 +123,7 @@ export default function Employee() {
       const j = await r.json();
       if (/reason required/i.test(j.error || "")) {
         const reason = window.prompt("SLA appears breached. Please enter a reason:");
-        if (!reason) return; // cancelled
+        if (!reason) return;
         body = { tenantId, taskId: selected.id, reason };
         r = await fetch(`/api/tasks/checkout`, {
           method: "POST",
@@ -141,15 +145,13 @@ export default function Employee() {
     const safeName = `${Date.now()}_${f.name.replace(/[^a-zA-Z0-9._-]/g,"-")}`;
     setUploading(true);
     try {
-      // get SAS to upload
+      // SAS to upload
       const sas = await fetch(`/api/receipts/sas?taskId=${encodeURIComponent(selected.id)}&filename=${encodeURIComponent(safeName)}`).then(r=>r.json());
       if (!sas?.uploadUrl) throw new Error("Could not get upload URL");
 
-      // upload to blob
       const put = await fetch(sas.uploadUrl, { method:"PUT", headers: {"x-ms-blob-type":"BlockBlob"}, body: f });
       if (!put.ok) throw new Error(`Blob upload failed (HTTP ${put.status})`);
 
-      // OCR
       const ocr = await fetch(`/api/receipts/ocr`, {
         method: "POST",
         headers: {"Content-Type":"application/json"},
@@ -219,6 +221,60 @@ export default function Employee() {
       alert("Expense auto-approved (within remaining).");
     } else if (status === "PENDING_REVIEW") {
       alert("Expense submitted for review (exceeds remaining).");
+    }
+  }
+
+  // ----- Edit & Resubmit (for REJECTED expenses) -----
+  function beginEdit(e) {
+    setEditExp(e);
+    setEditCategory(e.category || "");
+    const amt = e.editedTotal ?? e.total ?? "";
+    setEditAmount(amt);
+    setEditComment("");
+    // keep admin note visible in the edit card
+  }
+
+  async function submitEdit() {
+    if (!selected || !editExp) return;
+    if (!editCategory) return alert("Choose a category");
+    const amt = Number(editAmount || 0);
+    if (!Number.isFinite(amt) || amt <= 0) return alert("Enter a valid amount");
+    setSavingEdit(true);
+    try {
+      const body = {
+        tenantId,
+        expenseId: editExp.id,
+        category: editCategory,
+        total: amt,
+        comment: editComment || undefined
+      };
+      const r = await fetch(`/api/expenses/finalize`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(body)
+      });
+      const j = await r.json();
+      if (!r.ok) return alert(j.error || "Resubmit failed");
+
+      setEditExp(null);
+      setEditCategory("");
+      setEditAmount("");
+      setEditComment("");
+
+      await selectTask(selected);
+
+      const st = j?.approval?.status;
+      if (st === "AUTO_APPROVED") {
+        alert("Updated expense auto-approved (within remaining).");
+      } else if (st === "PENDING_REVIEW") {
+        alert("Updated expense submitted for review.");
+      } else {
+        alert("Updated.");
+      }
+    } catch (e) {
+      alert(e.message || "Resubmit failed");
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -293,22 +349,62 @@ export default function Employee() {
                 {expenses.length === 0 ? <p>None yet.</p> : (
                   <ul>
                     {expenses.map(e => (
-                      <li key={e.id} style={{margin:"0.5rem 0"}}>
+                      <li key={e.id} style={{margin:"0.75rem 0", borderBottom:"1px solid #f1f1f1", paddingBottom:8}}>
                         <div><strong>{e.category || "(uncategorized)"}:</strong> {ru(e.editedTotal ?? e.total)} — {e.approval?.status || "—"}</div>
                         <div style={{fontSize:12, color:"#555"}}>{new Date(e.createdAt).toLocaleString()} — {e.merchant || "Merchant"}</div>
                         <div style={{display:"flex", gap:8, marginTop:6}}>
                           <button onClick={() => openReceipt(e)}>Open receipt</button>
-                          {e.approval?.status === "REJECTED" && e.approval?.note && (
-                            <span style={{fontSize:12, color:"#b22"}}>Admin note: {e.approval.note}</span>
+                          {e.approval?.status === "REJECTED" && (
+                            <button onClick={() => beginEdit(e)}>Edit & resubmit</button>
                           )}
                         </div>
+                        {e.approval?.status === "REJECTED" && e.approval?.note && (
+                          <div style={{marginTop:6, fontSize:12, color:"#b22"}}>Admin note: {e.approval.note}</div>
+                        )}
                       </li>
                     ))}
                   </ul>
                 )}
               </div>
 
-              {/* Upload + OCR + finalize */}
+              {/* Edit rejected expense */}
+              {editExp && (
+                <div style={{border:"2px solid #ffe0e0", background:"#fff8f8", borderRadius:8, padding:12, marginBottom:16}}>
+                  <h3 style={{marginTop:0}}>Edit & resubmit</h3>
+                  {editExp?.approval?.note && (
+                    <div style={{fontSize:12, color:"#b22", marginBottom:8}}>
+                      Admin note: {editExp.approval.note}
+                    </div>
+                  )}
+                  <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, maxWidth:700}}>
+                    <label>Category
+                      <select value={editCategory} onChange={e=>setEditCategory(e.target.value)}>
+                        <option value="">— Select —</option>
+                        <option>Hotel</option>
+                        <option>Food</option>
+                        <option>Travel</option>
+                        <option>Other</option>
+                      </select>
+                    </label>
+                    <label>Amount (₹)
+                      <input type="number" step="0.01" value={editAmount} onChange={e=>setEditAmount(e.target.value)} />
+                    </label>
+                  </div>
+                  <label style={{display:"block", marginTop:8}}>Comment to admin (optional)
+                    <textarea rows={3} value={editComment} onChange={e=>setEditComment(e.target.value)} style={{width:"100%"}} placeholder="Explain the changes you made"/>
+                  </label>
+                  <div style={{display:"flex", gap:8, marginTop:10}}>
+                    <button onClick={submitEdit} disabled={savingEdit}>{savingEdit ? "Saving…" : "Resubmit"}</button>
+                    <button onClick={()=>{ setEditExp(null); setEditCategory(""); setEditAmount(""); setEditComment(""); }}>Cancel</button>
+                  </div>
+                  <div style={{fontSize:12, color:"#666", marginTop:6}}>
+                    After resubmitting, this expense will be re-evaluated against the <em>remaining</em> budget for its category.
+                    If it fits, it auto-approves; if not, it goes back to admin for review.
+                  </div>
+                </div>
+              )}
+
+              {/* Upload + OCR + finalize new expense */}
               <div style={{borderTop:"1px dashed #ddd", paddingTop:12}}>
                 <h3>Add a new expense</h3>
                 <input type="file" accept="image/*,application/pdf" ref={fileRef} onChange={onChooseFile} disabled={uploading}/>

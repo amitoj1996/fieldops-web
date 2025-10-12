@@ -523,3 +523,59 @@ def expenses_by_task(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps(items), mimetype="application/json", status_code=200)
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+# ---- Admin approval queue
+@app.route(route="expenses/pending", methods=["GET"])
+def expenses_pending(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        tenant = req.params.get("tenantId", "default")
+        c = _expenses_container()
+        q = ("SELECT * FROM c WHERE c.docType='Expense' AND c.tenantId=@t "
+             "AND c.approval.status='PENDING_REVIEW' ORDER BY c.createdAt ASC")
+        items = list(c.query_items(q, parameters=[{"name":"@t","value": tenant}], enable_cross_partition_query=True))
+        return func.HttpResponse(json.dumps(items), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+def _decide_expense(expense_id: str, tenant: str, status: str, note: str, decided_by: str):
+    c = _expenses_container()
+    exp = c.read_item(item=expense_id, partition_key=tenant)
+    appr = exp.get("approval") or {}
+    appr["status"] = status
+    appr["decidedAt"] = _now_iso()
+    appr["decidedBy"] = decided_by or "admin"
+    if note is not None:
+        appr["note"] = note
+    exp["approval"] = appr
+    c.replace_item(item=exp, body=exp)
+    return exp
+
+@app.route(route="expenses/approve", methods=["POST"])
+def expenses_approve(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        data = req.get_json()
+        tenant = data.get("tenantId","default")
+        expense_id = data.get("expenseId")
+        note = data.get("note")
+        decided_by = data.get("decidedBy","admin")
+        if not expense_id:
+            return func.HttpResponse(json.dumps({"error":"expenseId required"}), mimetype="application/json", status_code=400)
+        exp = _decide_expense(expense_id, tenant, "APPROVED", note, decided_by)
+        return func.HttpResponse(json.dumps(exp), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+@app.route(route="expenses/reject", methods=["POST"])
+def expenses_reject(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        data = req.get_json()
+        tenant = data.get("tenantId","default")
+        expense_id = data.get("expenseId")
+        note = data.get("note")
+        decided_by = data.get("decidedBy","admin")
+        if not expense_id:
+            return func.HttpResponse(json.dumps({"error":"expenseId required"}), mimetype="application/json", status_code=400)
+        exp = _decide_expense(expense_id, tenant, "REJECTED", note, decided_by)
+        return func.HttpResponse(json.dumps(exp), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)

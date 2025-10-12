@@ -8,28 +8,25 @@ export default function Employee() {
   const [tenantId] = useState("default");
   const [employeeId] = useState("emp-001");
 
-  // Task chooser
   const [tasks, setTasks] = useState([]);
   const [taskQuery, setTaskQuery] = useState("");
   const [taskId, setTaskId] = useState("");
 
-  // Timeline
   const [events, setEvents] = useState([]);
 
   // Expense flow
   const [file, setFile] = useState(null);
-  const [lastFileName, setLastFileName] = useState(""); // sanitized filename
-  const [expenseId, setExpenseId] = useState(null);     // keep the same expense across edits
+  const [lastFileName, setLastFileName] = useState("");
+  const [expenseId, setExpenseId] = useState(null);
   const [category, setCategory] = useState("Food");
-  const [editedTotal, setEditedTotal] = useState("");   // keep as string; "" means "not provided"
+  const [editedTotal, setEditedTotal] = useState("");
   const [lateReason, setLateReason] = useState("");
   const [ocr, setOcr] = useState(null);
   const [approval, setApproval] = useState(null);
-  const [currentExpense, setCurrentExpense] = useState(null); // <- show latest doc after finalize
+  const [currentExpense, setCurrentExpense] = useState(null);
   const [loading, setLoading] = useState(false);
   const [expenses, setExpenses] = useState([]);
 
-  // Load tasks (not completed)
   useEffect(() => {
     (async () => {
       const j = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
@@ -37,10 +34,10 @@ export default function Employee() {
     })();
   }, []);
 
-  // Load timeline on task change
-  useEffect(() => { taskId ? loadEvents() : setEvents([]); }, [taskId]);
+  useEffect(() => { taskId ? loadEvents() : setEvents([]); loadTaskExpenses(); }, [taskId]);
 
   async function loadEvents() {
+    if (!taskId) return;
     const j = await fetch(`/api/tasks/events?taskId=${encodeURIComponent(taskId)}&tenantId=${tenantId}`).then(r=>r.json());
     const arr = Array.isArray(j) ? [...j].sort((a,b)=> new Date(b.ts) - new Date(a.ts)) : [];
     setEvents(arr);
@@ -60,7 +57,7 @@ export default function Employee() {
     if (f) {
       const safe = sanitizeName(f.name);
       setLastFileName(safe);
-      setExpenseId(null);   // new file -> new expense (until OCR upsert returns id)
+      setExpenseId(null);
       setOcr(null); setApproval(null); setCurrentExpense(null); setEditedTotal("");
     } else {
       setLastFileName("");
@@ -99,7 +96,6 @@ export default function Employee() {
   }
 
   function totalOrUndefined() {
-    // send a number only if the user actually typed something; this keeps OCR total when left blank
     return editedTotal !== "" ? Number(editedTotal) : undefined;
   }
 
@@ -109,36 +105,27 @@ export default function Employee() {
     try {
       setLoading(true); setApproval(null);
 
-      // If we already have an expenseId for this file, skip OCR and only finalize
       if (expenseId) {
         const finRes = await fetch(`/api/expenses/finalize`, {
           method:"POST", headers:{"Content-Type":"application/json"},
-          body: JSON.stringify({
-            tenantId, expenseId, category,
-            total: totalOrUndefined(),
-            submittedBy: employeeId, comment: "Edited total"
-          })
+          body: JSON.stringify({ tenantId, expenseId, category, total: totalOrUndefined(), submittedBy: employeeId, comment: "Edited total" })
         });
         const fin = await finRes.json();
         if (!finRes.ok) throw new Error(fin.error || "Finalize error");
         setApproval(fin.approval);
-        setCurrentExpense(fin);          // show latest fields (editedTotal, approval, etc.)
-        await loadTaskExpenses();        // <- refresh the list so you see the change
+        setCurrentExpense(fin);
+        await loadTaskExpenses();
         return;
       }
 
-      // First-time submit for this file: upload + OCR (upsert) + finalize
       if (!file) return alert("Choose a receipt file first");
 
-      // 1) SAS for this (task + sanitized filename)
       const sas = await fetch(`/api/receipts/sas?taskId=${encodeURIComponent(taskId)}&filename=${encodeURIComponent(lastFileName)}`).then(r=>r.json());
       if (sas.error) throw new Error(sas.error);
 
-      // 2) Upload
       const put = await fetch(sas.uploadUrl, { method:"PUT", headers:{ "x-ms-blob-type":"BlockBlob" }, body:file });
       if (!put.ok) throw new Error("Upload failed");
 
-      // 3) OCR (save=true) — server upserts; returns the ONE expense for this receipt
       const ocrRes = await fetch(`/api/receipts/ocr`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ taskId, filename: lastFileName, tenantId, save: true })
@@ -151,14 +138,9 @@ export default function Employee() {
       if (!exp || !exp.id) throw new Error("Expense upsert failed");
       setExpenseId(exp.id);
 
-      // 4) Finalize (category + optional edited total)
       const finRes = await fetch(`/api/expenses/finalize`, {
         method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({
-          tenantId, expenseId: exp.id, category,
-          total: totalOrUndefined() ?? exp.total,
-          submittedBy: employeeId, comment: "Submitted from employee portal"
-        })
+        body: JSON.stringify({ tenantId, expenseId: exp.id, category, total: totalOrUndefined() ?? exp.total, submittedBy: employeeId, comment: "Submitted from employee portal" })
       });
       const fin = await finRes.json();
       if (!finRes.ok) throw new Error(fin.error||"Finalize error");
@@ -174,7 +156,7 @@ export default function Employee() {
   }
 
   async function loadTaskExpenses() {
-    if (!taskId) return;
+    if (!taskId) { setExpenses([]); return; }
     const j = await fetch(`/api/expenses/byTask?taskId=${encodeURIComponent(taskId)}&tenantId=${tenantId}`).then(r=>r.json());
     setExpenses(Array.isArray(j)?j:[]);
   }
@@ -186,11 +168,23 @@ export default function Employee() {
     if (j.readUrl) window.open(j.readUrl,"_blank");
   }
 
+  function startEditingRejected(e) {
+    setExpenseId(e.id);
+    setCategory(e.category || "Food");
+    const base = e.editedTotal ?? e.total;
+    setEditedTotal(base != null ? String(base) : "");
+    setOcr(null); setApproval(e.approval || null);
+    setCurrentExpense(e);
+    setFile(null);
+    setLastFileName("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   return (
     <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto", maxWidth:900}}>
       <h1>Employee portal</h1>
 
-      {/* Task picker by name */}
+      {/* Task picker */}
       <section style={{display:"grid", gap:10, margin:"1rem 0"}}>
         <div style={{display:"grid", gridTemplateColumns:"2fr 2fr auto", gap:8, alignItems:"end"}}>
           <label>Search task
@@ -216,7 +210,7 @@ export default function Employee() {
         </div>
       </section>
 
-      {/* Expense flow */}
+      {/* Expense form */}
       <form onSubmit={handleSubmit} style={{display:"grid", gap:12, margin:"1rem 0"}}>
         <div style={{display:"flex", gap:8, alignItems:"center"}}>
           <label style={{flex:1}}>Receipt file
@@ -240,14 +234,13 @@ export default function Employee() {
         {expenseId && <div style={{fontSize:12, color:"#555"}}>Editing existing expense: <code>{expenseId}</code></div>}
       </form>
 
-      {/* Show the most recent expense doc returned from finalize */}
-      {currentExpense && <div style={{border:"1px solid #ddd", padding:"1rem", borderRadius:8, marginBottom:"1rem"}}>
-        <strong>Current expense</strong>
-        <div style={{marginTop:6}}>Category: {currentExpense.category || "—"}</div>
-        <div>OCR total: {currentExpense.total ?? "—"}</div>
-        <div>Edited total: {currentExpense.editedTotal ?? "—"}</div>
-        <div>Approval: {currentExpense.approval?.status} {currentExpense.approval ? `• limit ₹${currentExpense.approval.limit}` : ""}</div>
-      </div>}
+      {/* Feedback only when REJECTED */}
+      {currentExpense?.approval?.status === "REJECTED" && currentExpense?.approval?.note && (
+        <div style={{border:"1px solid #f4c", background:"#fff6ff", padding:"1rem", borderRadius:8, marginBottom:"1rem"}}>
+          <strong>Admin feedback:</strong>
+          <div style={{marginTop:6}}>{currentExpense.approval.note}</div>
+        </div>
+      )}
 
       {ocr && <div style={{border:"1px solid #ddd", padding:"1rem", borderRadius:8, marginBottom:"1rem"}}>
         <strong>OCR (raw)</strong>
@@ -263,10 +256,21 @@ export default function Employee() {
       <button onClick={loadTaskExpenses} disabled={!taskId}>Refresh list</button>
       <ul>
         {expenses.map(e=>(
-          <li key={e.id} style={{margin:"0.75rem 0"}}>
+          <li key={e.id} style={{margin:"0.75rem 0", border:"1px solid #eee", padding:"8px", borderRadius:8}}>
             <div><strong>{e.category || "(uncategorized)"}:</strong> ₹{e.editedTotal ?? e.total} — {e.approval?.status || "—"}</div>
             <div style={{fontSize:13, color:"#555"}}>{new Date(e.createdAt).toLocaleString()}</div>
-            <div><button onClick={()=>openReceipt(e.blobPath)} style={{marginTop:6}}>Open receipt</button></div>
+            <div style={{display:"flex", gap:8, marginTop:6}}>
+              <button onClick={()=>openReceipt(e.blobPath)}>Open receipt</button>
+              {e.approval?.status === "REJECTED" && (
+                <button onClick={()=>startEditingRejected(e)}>Edit &amp; resubmit</button>
+              )}
+            </div>
+            {/* Show feedback ONLY when rejected */}
+            {e.approval?.status === "REJECTED" && e.approval?.note && (
+              <div style={{marginTop:6, fontSize:13, color:"#b22"}}>
+                Admin feedback: {e.approval.note}
+              </div>
+            )}
           </li>
         ))}
       </ul>

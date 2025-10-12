@@ -1,4 +1,4 @@
-import os, json, uuid, re, time, io, csv
+import os, json, uuid, re, time, io, csv, base64
 from datetime import datetime, timezone, timedelta
 
 import azure.functions as func
@@ -33,11 +33,9 @@ def _expenses_container():
     return _get_container_named(os.environ.get("EXPENSES_CONTAINER", "Expenses"))
 
 def _events_container():
-    # Use Tasks container by default to avoid RU spikes from a new container
     return _get_container_named(os.environ.get("EVENTS_CONTAINER", "Tasks"))
 
 def _catalog_container():
-    # Reuse Tasks container; separate by docType='Product' to save cost
     return _get_container_named(os.environ.get("CATALOG_CONTAINER", "Tasks"))
 
 DEFAULT_LIMITS = {"Hotel": 1000, "Food": 1000, "Travel": 1000, "Other": 1000}
@@ -63,6 +61,50 @@ def _parse_iso(s):
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
         return None
+
+# ---------------------------
+# Auth helpers (Static Web Apps)
+# ---------------------------
+def _principal(req: func.HttpRequest):
+    """Parse SWA's x-ms-client-principal header."""
+    try:
+        enc = req.headers.get("x-ms-client-principal")
+        if not enc:
+            return {"isAuthenticated": False, "roles": ["anonymous"]}
+        raw = base64.b64decode(enc)
+        data = json.loads(raw.decode("utf-8"))
+        roles = [str(r).lower() for r in (data.get("userRoles") or [])]
+        return {
+            "isAuthenticated": ("authenticated" in roles) or ("admin" in roles),
+            "userId": data.get("userId"),
+            "userDetails": data.get("userDetails"),
+            "roles": roles,
+            "provider": data.get("identityProvider")
+        }
+    except Exception:
+        return {"isAuthenticated": False, "roles": ["anonymous"]}
+
+def _is_admin(pr): return "admin" in (pr.get("roles") or [])
+
+def _ensure_auth(req):
+    pr = _principal(req)
+    if not pr["isAuthenticated"]:
+        return None, func.HttpResponse(json.dumps({"error":"Unauthorized"}), mimetype="application/json", status_code=401)
+    return pr, None
+
+def _ensure_admin(req):
+    pr, err = _ensure_auth(req)
+    if err: return pr, err
+    if not _is_admin(pr):
+        return pr, func.HttpResponse(json.dumps({"error":"Forbidden: admin only"}), mimetype="application/json", status_code=403)
+    return pr, None
+
+def _can_access_task(pr, task):
+    if _is_admin(pr): return True
+    if not pr or not task: return False
+    assignee = (task.get("assignee") or "").strip().lower()
+    user = (pr.get("userDetails") or pr.get("userId") or "").strip().lower()
+    return bool(assignee and user and assignee == user)
 
 # ---------------------------
 # Blob helpers (receipts)
@@ -107,6 +149,9 @@ def hello(req: func.HttpRequest) -> func.HttpResponse:
 # ---- Products (catalog)
 @app.route(route="products", methods=["GET"])
 def products_list(req: func.HttpRequest) -> func.HttpResponse:
+    # Any authenticated user can read
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
         tenant = req.params.get("tenantId", "default")
         c = _catalog_container()
@@ -118,6 +163,9 @@ def products_list(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="products", methods=["POST"])
 def products_create(req: func.HttpRequest) -> func.HttpResponse:
+    # Admin only
+    pr, err = _ensure_admin(req)
+    if err: return err
     try:
         data = req.get_json()
         name = (data.get("name") or "").strip()
@@ -141,6 +189,9 @@ def products_create(req: func.HttpRequest) -> func.HttpResponse:
 # ---- Tasks (create/list + limits)
 @app.route(route="tasks", methods=["POST"])
 def create_task(req: func.HttpRequest) -> func.HttpResponse:
+    # Admin only
+    pr, err = _ensure_admin(req)
+    if err: return err
     try:
         data = req.get_json()
         c = _tasks_container()
@@ -151,7 +202,7 @@ def create_task(req: func.HttpRequest) -> func.HttpResponse:
             "tenantId": data.get("tenantId", "default"),
             "type": data.get("type", "data_collection"),
             "title": data.get("title", ""),
-            "assignee": data.get("assignee", ""),
+            "assignee": (data.get("assignee") or "").strip(),  # recommend using employee email
             "slaStart": data.get("slaStart"),
             "slaEnd": data.get("slaEnd"),
             "status": data.get("status", "ASSIGNED"),
@@ -167,6 +218,10 @@ def create_task(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="tasks", methods=["GET"])
 def list_tasks(req: func.HttpRequest) -> func.HttpResponse:
+    # Any authenticated user can read. (We return all tasks so nothing "disappears" if assignee is not yet the email;
+    # actions are still protected per-task below.)
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
         tenant = req.params.get("tenantId", "default")
         c = _tasks_container()
@@ -178,6 +233,9 @@ def list_tasks(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="tasks/limits", methods=["PUT"])
 def update_task_limits(req: func.HttpRequest) -> func.HttpResponse:
+    # Admin only
+    pr, err = _ensure_admin(req)
+    if err: return err
     try:
         data = req.get_json()
         task_id = data.get("taskId")
@@ -194,20 +252,24 @@ def update_task_limits(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
-# ---- Check-in / Check-out / Timeline (idempotent)
+# ---- Check-in / Check-out / Timeline
 @app.route(route="tasks/checkin", methods=["POST"])
 def tasks_checkin(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
         data = req.get_json()
         tenant = data.get("tenantId","default")
         task_id = data.get("taskId")
         lat = data.get("lat"); lng = data.get("lng")
-        actor = data.get("actor") or data.get("employeeId")
+        actor = pr.get("userDetails") or pr.get("userId")
         if not task_id:
             return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
         task = _get_task(tenant, task_id)
         if not task:
             return func.HttpResponse(json.dumps({"error":"task not found"}), mimetype="application/json", status_code=404)
+        if not _can_access_task(pr, task):
+            return func.HttpResponse(json.dumps({"error":"Forbidden: not assignee"}), mimetype="application/json", status_code=403)
 
         evc = _events_container()
         q = ("SELECT TOP 1 * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t "
@@ -217,8 +279,7 @@ def tasks_checkin(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(json.dumps({"event": existing[0], "idempotent": True}), mimetype="application/json", status_code=200)
 
         ev = {"id": str(uuid.uuid4()), "docType":"TaskEvent", "tenantId": tenant, "taskId": task_id,
-              "eventType":"CHECK_IN", "ts": _now_iso(), "lat": lat, "lng": lng}
-        if actor: ev["actor"] = actor
+              "eventType":"CHECK_IN", "ts": _now_iso(), "lat": lat, "lng": lng, "actor": actor}
         evc.create_item(ev)
         task["status"] = "IN_PROGRESS"; task["checkInAt"] = ev["ts"]
         _save_task(task)
@@ -228,18 +289,22 @@ def tasks_checkin(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="tasks/checkout", methods=["POST"])
 def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
         data = req.get_json()
         tenant = data.get("tenantId","default")
         task_id = data.get("taskId")
         reason = data.get("reason")
         lat = data.get("lat"); lng = data.get("lng")
-        actor = data.get("actor") or data.get("employeeId")
+        actor = pr.get("userDetails") or pr.get("userId")
         if not task_id:
             return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
         task = _get_task(tenant, task_id)
         if not task:
             return func.HttpResponse(json.dumps({"error":"task not found"}), mimetype="application/json", status_code=404)
+        if not _can_access_task(pr, task):
+            return func.HttpResponse(json.dumps({"error":"Forbidden: not assignee"}), mimetype="application/json", status_code=403)
 
         evc = _events_container()
         q_out = ("SELECT TOP 1 * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t "
@@ -261,9 +326,8 @@ def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
         if late and not reason:
             return func.HttpResponse(json.dumps({"error":"reason required because task is beyond SLA"}), mimetype="application/json", status_code=400)
 
-        ev = {"id": str(uuid.uuiduuid4()) if False else str(uuid.uuid4()), "docType":"TaskEvent", "tenantId": tenant, "taskId": task_id,
-              "eventType":"CHECK_OUT", "ts": _now_iso(), "lat": lat, "lng": lng, "late": late, "reason": reason}
-        if actor: ev["actor"] = actor
+        ev = {"id": str(uuid.uuid4()), "docType":"TaskEvent", "tenantId": tenant, "taskId": task_id,
+              "eventType":"CHECK_OUT", "ts": _now_iso(), "lat": lat, "lng": lng, "late": late, "reason": reason, "actor": actor}
         evc.create_item(ev)
 
         task["status"] = "COMPLETED"; task["checkOutAt"] = ev["ts"]; task["slaBreached"] = late
@@ -277,11 +341,19 @@ def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="tasks/events", methods=["GET"])
 def tasks_events(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
         tenant = req.params.get("tenantId", "default")
         task_id = req.params.get("taskId")
         if not task_id:
             return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
+        task = _get_task(tenant, task_id)
+        if not task:
+            return func.HttpResponse(json.dumps({"error":"task not found"}), mimetype="application/json", status_code=404)
+        if not _can_access_task(pr, task):
+            return func.HttpResponse(json.dumps({"error":"Forbidden: not assignee"}), mimetype="application/json", status_code=403)
+
         c = _events_container()
         q = ("SELECT * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t "
              "AND c.taskId=@task ORDER BY c.ts ASC")
@@ -293,12 +365,17 @@ def tasks_events(req: func.HttpRequest) -> func.HttpResponse:
 # ---- Receipts: SAS + readSas + list
 @app.route(route="receipts/sas", methods=["GET"])
 def receipts_sas(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
         task_id  = req.params.get("taskId")
         filename = req.params.get("filename")
         if not task_id or not filename:
             return func.HttpResponse(json.dumps({"error":"taskId and filename are required"}),
                                      mimetype="application/json", status_code=400)
+        task = _get_task("default", task_id)
+        if not _can_access_task(pr, task):
+            return func.HttpResponse(json.dumps({"error":"Forbidden: not assignee"}), mimetype="application/json", status_code=403)
         blob_url, upload_url = _make_blob_urls(task_id, filename, for_write=True, minutes=10)
         return func.HttpResponse(json.dumps({"blobUrl": blob_url, "uploadUrl": upload_url}),
                                  mimetype="application/json", status_code=200)
@@ -307,6 +384,8 @@ def receipts_sas(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="receipts/readSas", methods=["GET"])
 def receipts_read_sas(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
         task_id  = req.params.get("taskId")
         filename = req.params.get("filename")
@@ -314,6 +393,9 @@ def receipts_read_sas(req: func.HttpRequest) -> func.HttpResponse:
         if not task_id or not filename:
             return func.HttpResponse(json.dumps({"error":"taskId and filename are required"}),
                                      mimetype="application/json", status_code=400)
+        task = _get_task("default", task_id)
+        if not _can_access_task(pr, task):
+            return func.HttpResponse(json.dumps({"error":"Forbidden: not assignee"}), mimetype="application/json", status_code=403)
         blob_url, read_url = _make_blob_urls(task_id, filename, for_read=True, minutes=minutes)
         return func.HttpResponse(json.dumps({"blobUrl": blob_url, "readUrl": read_url}),
                                  mimetype="application/json", status_code=200)
@@ -322,6 +404,8 @@ def receipts_read_sas(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="receipts/list", methods=["GET"])
 def receipts_list(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
         account   = os.environ["STG_ACCOUNT"]
         key       = os.environ["STG_KEY"]
@@ -330,6 +414,9 @@ def receipts_list(req: func.HttpRequest) -> func.HttpResponse:
         if not task_id:
             return func.HttpResponse(json.dumps({"error":"taskId required"}),
                                      mimetype="application/json", status_code=400)
+        task = _get_task("default", task_id)
+        if not _can_access_task(pr, task):
+            return func.HttpResponse(json.dumps({"error":"Forbidden: not assignee"}), mimetype="application/json", status_code=403)
         svc = _blob_service()
         cont = svc.get_container_client(container)
         items = [b.name for b in cont.list_blobs(name_starts_with=f"{task_id}/")]
@@ -340,6 +427,8 @@ def receipts_list(req: func.HttpRequest) -> func.HttpResponse:
 # ---- OCR + Expenses (upsert)
 @app.route(route="receipts/ocr", methods=["POST"])
 def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
         data = req.get_json()
         task_id  = data.get("taskId")
@@ -349,6 +438,9 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
         if not task_id or not filename:
             return func.HttpResponse(json.dumps({"error":"taskId and filename are required"}),
                                      mimetype="application/json", status_code=400)
+        task = _get_task(tenant, task_id)
+        if not _can_access_task(pr, task):
+            return func.HttpResponse(json.dumps({"error":"Forbidden: not assignee"}), mimetype="application/json", status_code=403)
 
         blob_url, read_url = _make_blob_urls(task_id, filename, for_read=True, minutes=10)
 
@@ -373,8 +465,8 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
         else:
             for _ in range(20):
                 time.sleep(1)
-                pr = requests.get(op_url, headers={"Ocp-Apim-Subscription-Key": key}, timeout=20)
-                result = pr.json()
+                prq = requests.get(op_url, headers={"Ocp-Apim-Subscription-Key": key}, timeout=20)
+                result = prq.json()
                 if result.get("status") in ("succeeded", "failed", "cancelled"):
                     break
 
@@ -454,6 +546,8 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
 # ---- Finalize with REMAINING budget logic
 @app.route(route="expenses/finalize", methods=["POST"])
 def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
       data = req.get_json()
       tenant = data.get("tenantId","default")
@@ -475,6 +569,11 @@ def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
           if items: expense = items[0]
       if not expense:
           return func.HttpResponse(json.dumps({"error":"expense not found"}), mimetype="application/json", status_code=404)
+
+      # Only assignee or admin can finalize this expense (based on its task)
+      task = _get_task(expense.get("tenantId","default"), expense.get("taskId"))
+      if not _can_access_task(pr, task):
+          return func.HttpResponse(json.dumps({"error":"Forbidden: not assignee"}), mimetype="application/json", status_code=403)
 
       original_total = expense.get("total")
       prev_edited    = expense.get("editedTotal", None)
@@ -498,9 +597,8 @@ def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
           except Exception:
               expense["isManualOverride"] = False
       if data.get("comment"): expense["comment"] = data["comment"]
-      if data.get("submittedBy"): expense["submittedBy"] = data["submittedBy"]
+      expense["submittedBy"] = pr.get("userDetails") or pr.get("userId")
 
-      task = _get_task(expense.get("tenantId","default"), expense.get("taskId"))
       limits = (task or {}).get("expenseLimits") or DEFAULT_LIMITS
       limit_for_cat = float(limits.get(category, limits.get("Other", 1000)) or 0)
 
@@ -551,6 +649,8 @@ def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="expenses", methods=["GET"])
 def expenses_list(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
         tenant = req.params.get("tenantId", "default")
         c = _expenses_container()
@@ -562,11 +662,17 @@ def expenses_list(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="expenses/byTask", methods=["GET"])
 def expenses_by_task(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_auth(req)
+    if err: return err
     try:
         tenant = req.params.get("tenantId", "default")
         task_id = req.params.get("taskId")
         if not task_id:
             return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
+        task = _get_task(tenant, task_id)
+        if not _can_access_task(pr, task):
+            return func.HttpResponse(json.dumps({"error":"Forbidden: not assignee"}), mimetype="application/json", status_code=403)
+
         c = _expenses_container()
         q = "SELECT * FROM c WHERE c.tenantId=@t AND c.docType='Expense' AND c.taskId=@task ORDER BY c.createdAt DESC"
         items = list(c.query_items(q, parameters=[{"name":"@t","value": tenant},{"name":"@task","value": task_id}], enable_cross_partition_query=True))
@@ -577,6 +683,8 @@ def expenses_by_task(req: func.HttpRequest) -> func.HttpResponse:
 # ---- Admin approval queue
 @app.route(route="expenses/pending", methods=["GET"])
 def expenses_pending(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_admin(req)
+    if err: return err
     try:
         tenant = req.params.get("tenantId", "default")
         c = _expenses_container()
@@ -595,7 +703,7 @@ def _decide_expense(expense_id: str, tenant: str, status: str, note: str, decide
     appr["decidedAt"] = _now_iso()
     appr["decidedBy"] = decided_by or "admin"
     if status == "REJECTED":
-        appr["note"] = note
+        appr["note"] = note  # feedback for employee
     elif note:
         appr["note"] = note
     exp["approval"] = appr
@@ -604,12 +712,14 @@ def _decide_expense(expense_id: str, tenant: str, status: str, note: str, decide
 
 @app.route(route="expenses/approve", methods=["POST"])
 def expenses_approve(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_admin(req)
+    if err: return err
     try:
         data = req.get_json()
         tenant = data.get("tenantId","default")
         expense_id = data.get("expenseId")
         note = data.get("note")
-        decided_by = data.get("decidedBy","admin")
+        decided_by = pr.get("userDetails") or "admin"
         if not expense_id:
             return func.HttpResponse(json.dumps({"error":"expenseId required"}), mimetype="application/json", status_code=400)
         exp = _decide_expense(expense_id, tenant, "APPROVED", note, decided_by)
@@ -619,12 +729,14 @@ def expenses_approve(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="expenses/reject", methods=["POST"])
 def expenses_reject(req: func.HttpRequest) -> func.HttpResponse:
+    pr, err = _ensure_admin(req)
+    if err: return err
     try:
         data = req.get_json()
         tenant = data.get("tenantId","default")
         expense_id = data.get("expenseId")
         note = (data.get("note") or "").strip()
-        decided_by = data.get("decidedBy","admin")
+        decided_by = pr.get("userDetails") or "admin"
         if not expense_id:
             return func.HttpResponse(json.dumps({"error":"expenseId required"}), mimetype="application/json", status_code=400)
         if not note:
@@ -637,20 +749,14 @@ def expenses_reject(req: func.HttpRequest) -> func.HttpResponse:
 # ---- Report CSV
 @app.route(route="report/csv", methods=["GET"])
 def report_csv(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    Export a CSV of tasks with: SLA, late flag, assigned products,
-    per-category totals (excluding REJECTED), and counts by status.
-    Optional query params:
-      tenantId (default 'default')
-      fromDate (YYYY-MM-DD)  - filters by task.createdAt >= fromDate
-      toDate   (YYYY-MM-DD)  - filters by task.createdAt <= toDate
-    """
+    pr, err = _ensure_admin(req)
+    if err: return err
     try:
         tenant = req.params.get("tenantId", "default")
         from_date = req.params.get("fromDate")
         to_date   = req.params.get("toDate")
 
-        # 1) Pull all tasks for tenant (optionally filter by createdAt)
+        # tasks
         tc = _tasks_container()
         tq = "SELECT * FROM c WHERE c.docType='Task' AND c.tenantId=@t"
         tasks = list(tc.query_items(tq, parameters=[{"name":"@t","value":tenant}], enable_cross_partition_query=True))
@@ -673,7 +779,7 @@ def report_csv(req: func.HttpRequest) -> func.HttpResponse:
 
         tasks = [t for t in tasks if _in_range(t)]
 
-        # 2) Pull all expenses for tenant (group in-memory by task)
+        # expenses grouped
         ec = _expenses_container()
         eq = "SELECT * FROM c WHERE c.docType='Expense' AND c.tenantId=@t"
         expenses = list(ec.query_items(eq, parameters=[{"name":"@t","value":tenant}], enable_cross_partition_query=True))
@@ -681,9 +787,7 @@ def report_csv(req: func.HttpRequest) -> func.HttpResponse:
         for e in expenses:
             exp_by_task.setdefault(e.get("taskId"), []).append(e)
 
-        # 3) Compose CSV rows
         buf = io.StringIO()
-        # Optional BOM for better Excel support
         buf.write("\ufeff")
         writer = csv.writer(buf)
         header = [
@@ -709,7 +813,6 @@ def report_csv(req: func.HttpRequest) -> func.HttpResponse:
             cout= t.get("checkOutAt") or ""
             breached = bool(t.get("slaBreached"))
 
-            # Products summary
             items = t.get("items") or []
             products_str = ", ".join([f"{(it.get('name') or '').replace(',', ' ')} x{it.get('qty') or 1}" for it in items])
 
@@ -727,7 +830,7 @@ def report_csv(req: func.HttpRequest) -> func.HttpResponse:
                     pending += 1
                 elif st in ("APPROVED","AUTO_APPROVED"):
                     approved += 1
-                # Totals exclude REJECTED; include PENDING and APPROVED
+                # Include PENDING & APPROVED in totals, exclude REJECTED
                 if cat == "Hotel":
                     hotel += amt
                 elif cat == "Food":

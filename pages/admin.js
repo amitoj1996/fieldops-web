@@ -40,9 +40,9 @@ export default function Admin() {
   const me = useAuth();
   const [tenantId] = useState("default");
 
-  // --- Reports (shared date filters for dashboard/charts/EoM) ---
+  // --- Reports (shared date filters for dashboard/charts/EoM/Performance) ---
   const [reportFrom, setReportFrom] = useState("");
-  const [reportTo, setReportTo] = useState("");
+  const [reportTo,   setReportTo]   = useState("");
   function downloadReport() {
     let url = `/api/report/csv?tenantId=${tenantId}`;
     if (reportFrom) url += `&fromDate=${reportFrom}`;
@@ -58,6 +58,10 @@ export default function Admin() {
     if (dTo && dt > dTo) return false;
     return true;
   };
+  const rangeDays = useMemo(() => {
+    if (dFrom && dTo) return Math.max(1, Math.round((dTo - dFrom) / 86400000) + 1);
+    return 30; // default window when not set
+  }, [dFrom, dTo]);
 
   // Tasks + lookup
   const [tasks, setTasks] = useState([]);
@@ -237,15 +241,12 @@ export default function Admin() {
   }, [expenses, tasksInRange, dFrom, dTo]);
 
   const kpis = useMemo(() => {
-    // Open vs Completed
     const open = tasksInRange.filter(t => (t.status || "ASSIGNED") !== "COMPLETED").length;
     const completedList = tasksInRange.filter(t => (t.status || "") === "COMPLETED");
     const completed = completedList.length;
-    // SLA breach rate among completed
     const breached = completedList.filter(t => !!t.slaBreached).length;
     const breachRate = completed ? (breached / completed) * 100 : 0;
 
-    // Budget sums by category (from tasks)
     const catKeys = ["Hotel","Food","Travel","Other"];
     const budget = { Hotel:0, Food:0, Travel:0, Other:0 };
     for (const t of tasksInRange) {
@@ -253,7 +254,6 @@ export default function Admin() {
       for (const k of catKeys) budget[k] += Number(el[k] || 0);
     }
 
-    // Spend by category: include APPROVED, AUTO_APPROVED, PENDING_REVIEW (exclude REJECTED)
     const spend = { Hotel:0, Food:0, Travel:0, Other:0 };
     for (const e of expensesInRange) {
       const st = (e.approval?.status) || "";
@@ -264,7 +264,6 @@ export default function Admin() {
       spend[cat] += amt;
     }
 
-    // Top spenders (sum non-rejected)
     const perUser = {};
     for (const e of expensesInRange) {
       const st = (e.approval?.status) || "";
@@ -283,15 +282,8 @@ export default function Admin() {
   }, [tasksInRange, expensesInRange, tasksById]);
 
   // ---- Employee of the Month (EoM) ----
-  // Scoring (transparent):
-  // +10 per completed task
-  // +10 per on-time completion (no SLA breach)
-  // −5 per SLA breach (NO cap)
-  // +1 per product unit worked (capped at +20)
-  // ± up to 20 for budget under/over vs total budget of their tasks
   const eom = useMemo(() => {
     const byAssignee = {};
-    // prepare budgets & product units per assignee
     for (const t of tasksInRange) {
       const a = (t.assignee || "—").toLowerCase();
       const limits = t.expenseLimits || {};
@@ -301,18 +293,14 @@ export default function Admin() {
       });
       s.tasks.push(t.id);
       s.budget += totalBudget;
-
-      // product units = sum of quantities on task items (default 1)
       if (Array.isArray(t.items)) {
         for (const it of t.items) s.productUnits += Number(it?.quantity || 1);
       }
-
       if ((t.status||"") === "COMPLETED") {
         s.completed += 1;
         if (!t.slaBreached) s.onTime += 1; else s.breaches += 1;
       }
     }
-    // spend per assignee (non-rejected)
     for (const e of expensesInRange) {
       const st = (e.approval?.status) || "";
       if (st === "REJECTED") continue;
@@ -326,14 +314,14 @@ export default function Admin() {
       const base = s.completed * 10;
       const ontime = s.onTime * 10;
       const breachPenalty = -(s.breaches * 5); // NO CAP
-      const productBonus = Math.min(20, Math.max(0, s.productUnits * 1)); // +1 per unit, capped at +20
+      const productBonus = Math.min(20, Math.max(0, s.productUnits * 1)); // monthly cap stays
       let budgetBonus = 0;
       if (s.budget > 0) {
         if (s.spend <= s.budget) {
-          const underPct = 1 - (s.spend / s.budget); // 0..1
+          const underPct = 1 - (s.spend / s.budget);
           budgetBonus = Math.min(20, Math.max(0, 20 * underPct));
         } else {
-          const overPct = (s.spend - s.budget) / s.budget; // >0
+          const overPct = (s.spend - s.budget) / s.budget;
           budgetBonus = -Math.min(20, 20 * overPct);
         }
       } else {
@@ -345,9 +333,116 @@ export default function Admin() {
 
     const winner = rows[0] || null;
     const top3 = rows.slice(0, Math.min(3, rows.length));
-    const low3 = rows.slice(-Math.min(3, rows.length)).reverse(); // worst first
+    const low3 = rows.slice(-Math.min(3, rows.length)).reverse();
     return { rows, winner, top3, low3 };
   }, [tasksInRange, expensesInRange, tasksById]);
+
+  // ---- PERFORMANCE (Overall/Windowed) — OPI with percentile normalization ----
+  function percentile(values, v) {
+    const arr = (values||[]).slice().sort((a,b)=>a-b);
+    const n = arr.length;
+    if (n <= 1) return 100;
+    let countLE = 0;
+    for (let i=0;i<n;i++) if (arr[i] <= v) countLE++;
+    return ((countLE - 1) / (n - 1)) * 100; // 0..100
+  }
+
+  const performance = useMemo(() => {
+    const per = {}; // assignee -> aggregates
+    // build task-based aggregates
+    for (const t of tasksInRange) {
+      const a = (t.assignee || "—").toLowerCase();
+      const limits = t.expenseLimits || {};
+      const totalBudget = ["Hotel","Food","Travel","Other"].reduce((s,k)=> s + Number(limits[k]||0), 0);
+      const row = per[a] || (per[a] = {
+        assignee:a,
+        assigned: 0, completed: 0, onTime: 0, breaches: 0,
+        budget: 0, spend: 0, // spend filled from expenses
+        productUnits: 0,
+        expTotal: 0, expRejected: 0
+      });
+      row.assigned += 1;
+      row.budget += totalBudget;
+      if ((t.status||"") === "COMPLETED") {
+        row.completed += 1;
+        if (!t.slaBreached) row.onTime += 1; else row.breaches += 1;
+      }
+      if (Array.isArray(t.items)) {
+        for (const it of t.items) row.productUnits += Number(it?.quantity || 1);
+      }
+    }
+    // expenses
+    for (const e of expensesInRange) {
+      const t = tasksById[e.taskId] || {};
+      const a = (t.assignee || "—").toLowerCase();
+      if (!per[a]) per[a] = {
+        assignee:a, assigned:0, completed:0, onTime:0, breaches:0, budget:0, spend:0, productUnits:0, expTotal:0, expRejected:0
+      };
+      const st = (e.approval?.status) || "";
+      per[a].expTotal += 1;
+      if (st === "REJECTED") {
+        per[a].expRejected += 1;
+      } else {
+        per[a].spend += Number(e.editedTotal ?? e.total ?? 0) || 0;
+      }
+    }
+
+    const rowsBase = Object.values(per).map(r => {
+      const completionRate = r.assigned ? r.completed / r.assigned : 0;
+      const onTimeRate     = r.completed ? r.onTime   / r.completed : 0;
+      const breachRate     = r.completed ? r.breaches / r.completed : 0;
+      const budgetScore    = r.budget > 0
+        ? Math.max(0, 1 - Math.max(0, r.spend - r.budget) / r.budget)
+        : (r.spend > 0 ? 0 : 1);
+      const tasksPer30d    = (r.assigned / rangeDays) * 30;
+      const unitsPer30d    = (r.productUnits / rangeDays) * 30;
+      const rejectRate     = r.expTotal ? (r.expRejected / r.expTotal) : 0;
+      const qualityIndex   = 1 - rejectRate;
+
+      return {
+        ...r,
+        metrics: { completionRate, onTimeRate, breachRate, budgetScore, tasksPer30d, unitsPer30d, qualityIndex }
+      };
+    });
+
+    if (rowsBase.length === 0) return { rows: [], top: [], low: [] };
+
+    // percentile normalization
+    const onTimeArr   = rowsBase.map(r => r.metrics.onTimeRate);
+    const okBreachArr = rowsBase.map(r => 1 - r.metrics.breachRate);
+    const budgetArr   = rowsBase.map(r => r.metrics.budgetScore);
+    const tasksArr    = rowsBase.map(r => r.metrics.tasksPer30d);
+    const unitsArr    = rowsBase.map(r => r.metrics.unitsPer30d);
+    const qualArr     = rowsBase.map(r => r.metrics.qualityIndex);
+
+    const rows = rowsBase.map(r => {
+      const pOnTime   = percentile(onTimeArr,   r.metrics.onTimeRate);
+      const pBreachOK = percentile(okBreachArr, 1 - r.metrics.breachRate);
+      const pBudget   = percentile(budgetArr,   r.metrics.budgetScore);
+      const pTasks    = percentile(tasksArr,    r.metrics.tasksPer30d);
+      const pUnits    = percentile(unitsArr,    r.metrics.unitsPer30d);
+      const pProd     = (pTasks + pUnits) / 2; // combine two productivity measures
+      const pQual     = percentile(qualArr,     r.metrics.qualityIndex);
+
+      const score = Math.round(
+        0.30 * pOnTime +
+        0.20 * pBreachOK +
+        0.20 * pBudget +
+        0.20 * pProd +
+        0.10 * pQual
+      );
+
+      return {
+        ...r,
+        percentiles: { pOnTime, pBreachOK, pBudget, pProd, pQual },
+        score
+      };
+    }).sort((a,b)=> b.score - a.score);
+
+    const top = rows.slice(0, Math.min(10, rows.length));
+    const low = rows.slice(-Math.min(10, rows.length)).reverse();
+    return { rows, top, low };
+  }, [tasksInRange, expensesInRange, tasksById, rangeDays]);
 
   // ---- Tasks list + Edit/Delete flow ----
   const [taskSearch, setTaskSearch] = useState("");
@@ -555,12 +650,11 @@ export default function Admin() {
                 <strong>Spend/Budget:</strong> {ru(eom.winner.spend)} / {ru(eom.winner.budget)}
               </div>
 
-              {/* Top & Low performers */}
               <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, margin:"8px 0 12px"}}>
                 <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
                   <div style={{fontWeight:700, marginBottom:6}}>Top 3 performers</div>
                   <ol style={{margin:0, paddingLeft:18}}>
-                    {eom.top3.map((r, i) => (
+                    {eom.top3.map((r) => (
                       <li key={`top-${r.assignee}`} style={{margin:"4px 0"}}>
                         <strong>{r.assignee || "—"}</strong> &nbsp;—&nbsp; Score: {r.score}
                       </li>
@@ -570,7 +664,7 @@ export default function Admin() {
                 <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
                   <div style={{fontWeight:700, marginBottom:6}}>Top 3 low performers</div>
                   <ol style={{margin:0, paddingLeft:18}}>
-                    {eom.low3.map((r, i) => (
+                    {eom.low3.map((r) => (
                       <li key={`low-${r.assignee}`} style={{margin:"4px 0"}}>
                         <strong>{r.assignee || "—"}</strong> &nbsp;—&nbsp; Score: {r.score}
                       </li>
@@ -614,6 +708,82 @@ export default function Admin() {
               <div style={{fontSize:12, color:"#666", marginTop:6}}>
                 Scoring: +10/completed, +10/on-time, <strong>−5 per SLA breach (no cap)</strong>, +1/product unit (cap +20),
                 and ± up to 20 for budget under/over vs total budget.
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* PERFORMANCE (Overall/Windowed) */}
+        <div style={{marginTop:18}}>
+          <h3 style={{margin:"8px 0"}}>Performance (Overall / Windowed)</h3>
+          {(!performance.rows || performance.rows.length===0) ? (
+            <div style={{color:"#666"}}>No data in this range.</div>
+          ) : (
+            <>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, margin:"8px 0 12px"}}>
+                <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
+                  <div style={{fontWeight:700, marginBottom:6}}>Top 10 by OPI</div>
+                  <ol style={{margin:0, paddingLeft:18}}>
+                    {performance.top.map((r) => (
+                      <li key={`opi-top-${r.assignee}`} style={{margin:"4px 0"}}>
+                        <strong>{r.assignee || "—"}</strong> — OPI: {r.score}
+                        <span style={{color:"#666"}}>{`  (On-time P:${r.percentiles.pOnTime.toFixed(0)} | SLA P:${r.percentiles.pBreachOK.toFixed(0)} | Budget P:${r.percentiles.pBudget.toFixed(0)} | Prod P:${r.percentiles.pProd.toFixed(0)} | Quality P:${r.percentiles.pQual.toFixed(0)})`}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+                <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
+                  <div style={{fontWeight:700, marginBottom:6}}>Bottom 10 by OPI</div>
+                  <ol style={{margin:0, paddingLeft:18}}>
+                    {performance.low.map((r) => (
+                      <li key={`opi-low-${r.assignee}`} style={{margin:"4px 0"}}>
+                        <strong>{r.assignee || "—"}</strong> — OPI: {r.score}
+                        <span style={{color:"#666"}}>{`  (On-time P:${r.percentiles.pOnTime.toFixed(0)} | SLA P:${r.percentiles.pBreachOK.toFixed(0)} | Budget P:${r.percentiles.pBudget.toFixed(0)} | Prod P:${r.percentiles.pProd.toFixed(0)} | Quality P:${r.percentiles.pQual.toFixed(0)})`}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              </div>
+
+              <div style={{overflowX:"auto"}}>
+                <table style={{borderCollapse:"collapse", width:"100%", minWidth:960}}>
+                  <thead>
+                    <tr style={{textAlign:"left", borderBottom:"1px solid #eee"}}>
+                      <th style={{padding:"6px 8px"}}>#</th>
+                      <th style={{padding:"6px 8px"}}>Employee</th>
+                      <th style={{padding:"6px 8px"}}>OPI</th>
+                      <th style={{padding:"6px 8px"}}>Assigned</th>
+                      <th style={{padding:"6px 8px"}}>Completed</th>
+                      <th style={{padding:"6px 8px"}}>On-time%</th>
+                      <th style={{padding:"6px 8px"}}>SLA breaches</th>
+                      <th style={{padding:"6px 8px"}}>Budget</th>
+                      <th style={{padding:"6px 8px"}}>Spend</th>
+                      <th style={{padding:"6px 8px"}}>Units</th>
+                      <th style={{padding:"6px 8px"}}>Exp rejected%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {performance.rows.map((r, i) => (
+                      <tr key={`opi-row-${r.assignee}`} style={{borderBottom:"1px solid #f4f4f4"}}>
+                        <td style={{padding:"6px 8px"}}>{i+1}</td>
+                        <td style={{padding:"6px 8px"}}><strong>{r.assignee || "—"}</strong></td>
+                        <td style={{padding:"6px 8px"}}>{r.score}</td>
+                        <td style={{padding:"6px 8px"}}>{r.assigned}</td>
+                        <td style={{padding:"6px 8px"}}>{r.completed}</td>
+                        <td style={{padding:"6px 8px"}}>{(r.metrics.onTimeRate*100).toFixed(0)}%</td>
+                        <td style={{padding:"6px 8px"}}>{r.breaches}</td>
+                        <td style={{padding:"6px 8px"}}>{ru(r.budget)}</td>
+                        <td style={{padding:"6px 8px"}}>{ru(r.spend)}</td>
+                        <td style={{padding:"6px 8px"}}>{r.productUnits}</td>
+                        <td style={{padding:"6px 8px"}}>{(r.expTotal? (r.expRejected/r.expTotal*100):0).toFixed(0)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{fontSize:12, color:"#666", marginTop:6}}>
+                OPI = 0.30·On-time (percentile) + 0.20·SLA (1−breach, percentile) + 0.20·Budget discipline (percentile)
+                + 0.20·Productivity (tasks+units, percentile) + 0.10·Quality (1−reject rate, percentile).
               </div>
             </>
           )}
@@ -669,10 +839,14 @@ export default function Admin() {
           <button type="submit" disabled={savingProduct}>{savingProduct ? "Saving…" : "Add product"}</button>
         </form>
         <div style={{marginTop:12}}>
-          {products.length === 0 ? <p style={{color:"#666"}}>No products yet.</p> : (
+          {products.length === 0 ? (
+            <p style={{color:"#666"}}>No products yet.</p>
+          ) : (
             <ul>
               {products.map(p => (
-                <li key={p.id || p.productId}>{p.name || p.title || (p.id || p.productId)}{p.sku ? ` — ${p.sku}` : ""}</li>
+                <li key={p.id || p.productId}>
+                  {p.name || p.title || (p.id || p.productId)}{p.sku ? ` — ${p.sku}` : ""}
+                </li>
               ))}
             </ul>
           )}
@@ -1053,6 +1227,7 @@ export default function Admin() {
   );
 }
 
+/* ---------- small UI helpers ---------- */
 function KPI({title, value}) {
   return (
     <div style={{border:"1px solid #eee", borderRadius:8, padding:"10px 12px"}}>
@@ -1061,7 +1236,6 @@ function KPI({title, value}) {
     </div>
   );
 }
-
 function formatINR(n) {
   const v = Number(n||0);
   if (v >= 1e7) return "₹" + (v/1e7).toFixed(1) + "cr";
@@ -1104,9 +1278,7 @@ function InteractiveGroupedBars({ categories, series, height=240, width=560, pad
   return (
     <div style={{position:"relative"}} ref={ref}>
       <svg width="100%" viewBox={`0 0 ${totalW} ${h}`} role="img" aria-label="Grouped bar chart">
-        {/* axes */}
         <line x1={padding} y1={baselineY} x2={totalW-padding} y2={baselineY} stroke="#ddd"/>
-        {/* y ticks */}
         {Array.from({length:4}, (_,i)=> (i+1)).map(i=>{
           const y = baselineY - (i*(chartH/4));
           return <g key={i}>
@@ -1121,7 +1293,6 @@ function InteractiveGroupedBars({ categories, series, height=240, width=560, pad
           const gx = padding + idx*(groupW + gapOuter);
           return (
             <g key={c} transform={`translate(${gx},0)`}>
-              {/* bars */}
               {series.map((s, si) => {
                 const v = Number(activeSeries[si].values[idx]||0);
                 const hgt = Math.max(0, (v/max) * (chartH-4));
@@ -1141,13 +1312,11 @@ function InteractiveGroupedBars({ categories, series, height=240, width=560, pad
                   />
                 );
               })}
-              {/* label */}
               <text x={groupW/2} y={baselineY+12} textAnchor="middle" fontSize="11" fill="#555">{c}</text>
             </g>
           );
         })}
 
-        {/* legend (click to toggle) */}
         <g transform={`translate(${padding}, ${padding-12})`}>
           {series.map((s, i)=>(
             <g key={s.name} transform={`translate(${i*130},0)`} style={{cursor:"pointer"}}

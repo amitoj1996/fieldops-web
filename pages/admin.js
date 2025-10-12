@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 
+/* ---------- auth + small utils ---------- */
 function useAuth() {
   const [me, setMe] = useState(null);
   useEffect(() => {
@@ -36,11 +37,12 @@ function combineISO(dateStr, timeStr) {
   return new Date(`${d}T${t}`).toISOString();
 }
 
+/* ------------------ PAGE ------------------ */
 export default function Admin() {
   const me = useAuth();
   const [tenantId] = useState("default");
 
-  // --- Reports (shared date filters for dashboard/charts/EoM/Performance) ---
+  /* ---------- Global filters shared by all tabs ---------- */
   const [reportFrom, setReportFrom] = useState("");
   const [reportTo,   setReportTo]   = useState("");
   function downloadReport() {
@@ -63,7 +65,7 @@ export default function Admin() {
     return 30; // default window when not set
   }, [dFrom, dTo]);
 
-  // Tasks + lookup
+  /* ---------- Data loads ---------- */
   const [tasks, setTasks] = useState([]);
   const tasksById = useMemo(() => {
     const m = {};
@@ -71,7 +73,6 @@ export default function Admin() {
     return m;
   }, [tasks]);
 
-  // Products (shared: for create & edit task)
   const [products, setProducts] = useState([]);
   async function loadProducts() {
     try {
@@ -81,79 +82,18 @@ export default function Admin() {
   }
   useEffect(() => { loadProducts(); }, [tenantId]);
 
-  // Pending review
   const [pending, setPending] = useState([]);
   const [loadingPending, setLoadingPending] = useState(true);
-  const [decidingId, setDecidingId] = useState(null);
-  const [notes, setNotes] = useState({});
 
-  // All expenses (any status)
   const [expenses, setExpenses] = useState([]);
   const [loadingAll, setLoadingAll] = useState(true);
-  const [statusFilter, setStatusFilter] = useState("ALL");
-  const [search, setSearch] = useState("");
 
-  // Create task (SLA split + products)
-  const [newTask, setNewTask] = useState({
-    title: "",
-    type: "data_collection",
-    assignee: "",
-    slaStartDate: "",
-    slaStartTime: "",
-    slaEndDate: "",
-    slaEndTime: "",
-    expenseLimits: { Hotel:1000, Food:1000, Travel:1000, Other:1000 },
-    items: [] // [{productId, quantity}]
-  });
-  function createAddItem() {
-    setNewTask(prev => ({ ...prev, items: [...(prev.items||[]), {productId:"", quantity:1}] }));
-  }
-  function createUpdateItem(idx, patch) {
-    setNewTask(prev => {
-      const arr = (prev.items||[]).slice();
-      arr[idx] = { ...arr[idx], ...patch };
-      return { ...prev, items: arr };
-    });
-  }
-  function createRemoveItem(idx) {
-    setNewTask(prev => ({ ...prev, items: (prev.items||[]).filter((_,i)=>i!==idx) }));
-  }
-
-  // Edit modal state (includes products)
-  const [editOpen, setEditOpen] = useState(false);
-  const [editId, setEditId] = useState(null);
-  const [editForm, setEditForm] = useState({
-    title: "",
-    type: "data_collection",
-    assignee: "",
-    slaStartDate: "",
-    slaStartTime: "",
-    slaEndDate: "",
-    slaEndTime: "",
-    expenseLimits: { Hotel:1000, Food:1000, Travel:1000, Other:1000 },
-    items: [] // [{productId, quantity}]
-  });
-  const [savingEdit, setSavingEdit] = useState(false);
-
-  // Delete modal state
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState(null);
-  const [cascadeDelete, setCascadeDelete] = useState(true);
-  const [deleting, setDeleting] = useState(false);
-
-  // Product create (admin section)
-  const [newProduct, setNewProduct] = useState({ name:"", sku:"" });
-  const [savingProduct, setSavingProduct] = useState(false);
-
-  // Load tasks + expenses
   async function loadTasks() {
     try {
       const t = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
       setTasks(Array.isArray(t)? t : []);
     } catch(e){ console.error(e); }
   }
-  useEffect(() => { loadTasks(); }, [tenantId]);
-
   async function loadPending() {
     setLoadingPending(true);
     try {
@@ -171,7 +111,7 @@ export default function Admin() {
     } catch(e){ console.error(e); }
     finally { setLoadingAll(false); }
   }
-  useEffect(() => { loadPending(); loadAllExpenses(); }, [tenantId]);
+  useEffect(() => { loadTasks(); loadPending(); loadAllExpenses(); }, [tenantId]);
 
   async function openReceipt(exp) {
     try {
@@ -183,63 +123,14 @@ export default function Admin() {
     }
   }
 
-  async function decide(expenseId, action) {
-    setDecidingId(expenseId);
-    try {
-      const body = { tenantId, expenseId, note: (notes[expenseId]||"").trim() || undefined };
-      const url  = action === "approve" ? "/api/expenses/approve" : "/api/expenses/reject";
-      const r = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
-      const j = await r.json();
-      if (!r.ok) return alert(j.error || `Could not ${action}`);
-      setNotes(prev => ({ ...prev, [expenseId]: "" }));
-      await loadPending();
-      await loadAllExpenses();
-    } catch (e) {
-      alert(e.message || `Could not ${action}`);
-    } finally {
-      setDecidingId(null);
-    }
-  }
-
-  async function createTask(ev){
-    ev.preventDefault();
-    const payload = {
-      tenantId,
-      title: newTask.title,
-      type: newTask.type,
-      assignee: newTask.assignee,
-      slaStart: combineISO(newTask.slaStartDate, newTask.slaStartTime) || undefined,
-      slaEnd:   combineISO(newTask.slaEndDate,   newTask.slaEndTime)   || undefined,
-      expenseLimits: {
-        Hotel: Number(newTask.expenseLimits.Hotel||0),
-        Food:  Number(newTask.expenseLimits.Food||0),
-        Travel:Number(newTask.expenseLimits.Travel||0),
-        Other: Number(newTask.expenseLimits.Other||0)
-      },
-      items: (newTask.items||[])
-        .filter(x => (x.productId||"").trim().length>0)
-        .map(x => ({ productId: x.productId, quantity: Number(x.quantity||1) }))
-    };
-    const r = await fetch(`/api/tasks`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-    const j = await r.json();
-    if (!r.ok) return alert(j.error || "Create task failed");
-    await loadTasks();
-    setNewTask({
-      title: "", type: "data_collection", assignee: "",
-      slaStartDate: "", slaStartTime: "", slaEndDate: "", slaEndTime: "",
-      expenseLimits: { Hotel:1000, Food:1000, Travel:1000, Other:1000 },
-      items: []
-    });
-    alert("Task created");
-  }
-
-  // ---- Dashboard calculations (createdAt-based, same as CSV) ----
+  /* ---------- Shared computed lists ---------- */
   const tasksInRange = useMemo(() => (tasks||[]).filter(t => inRange(t.createdAt)), [tasks, dFrom, dTo]);
   const expensesInRange = useMemo(() => {
     const allowed = new Set(tasksInRange.map(t => t.id));
     return (expenses||[]).filter(e => allowed.has(e.taskId) && inRange(e.createdAt));
   }, [expenses, tasksInRange, dFrom, dTo]);
 
+  /* ---------- KPIs ---------- */
   const kpis = useMemo(() => {
     const open = tasksInRange.filter(t => (t.status || "ASSIGNED") !== "COMPLETED").length;
     const completedList = tasksInRange.filter(t => (t.status || "") === "COMPLETED");
@@ -273,15 +164,15 @@ export default function Admin() {
       const amt = Number(e.editedTotal ?? e.total ?? 0) || 0;
       perUser[user] = (perUser[user] || 0) + amt;
     }
-    const top = Object.entries(perUser)
+    const ranked = Object.entries(perUser)
       .map(([assignee, total]) => ({ assignee, total }))
-      .sort((a,b)=> b.total - a.total)
-      .slice(0, 5);
+      .sort((a,b)=> b.total - a.total);
 
-    return { open, completed, breachRate, budget, spend, top };
+    return { open, completed, breachRate, budget, spend, rankedSpenders: ranked };
   }, [tasksInRange, expensesInRange, tasksById]);
 
-  // ---- Employee of the Month (EoM) ----
+  /* ---------- EOM (with adjustable N) ---------- */
+  const [eomN, setEomN] = useState(3);
   const eom = useMemo(() => {
     const byAssignee = {};
     for (const t of tasksInRange) {
@@ -289,13 +180,10 @@ export default function Admin() {
       const limits = t.expenseLimits || {};
       const totalBudget = ["Hotel","Food","Travel","Other"].reduce((s,k)=> s + Number(limits[k]||0), 0);
       const s = byAssignee[a] || (byAssignee[a] = {
-        assignee:a, tasks:[], completed:0, onTime:0, breaches:0, budget:0, spend:0, productUnits:0
+        assignee:a, completed:0, onTime:0, breaches:0, budget:0, spend:0, productUnits:0
       });
-      s.tasks.push(t.id);
       s.budget += totalBudget;
-      if (Array.isArray(t.items)) {
-        for (const it of t.items) s.productUnits += Number(it?.quantity || 1);
-      }
+      if (Array.isArray(t.items)) for (const it of t.items) s.productUnits += Number(it?.quantity || 1);
       if ((t.status||"") === "COMPLETED") {
         s.completed += 1;
         if (!t.slaBreached) s.onTime += 1; else s.breaches += 1;
@@ -306,15 +194,14 @@ export default function Admin() {
       if (st === "REJECTED") continue;
       const t = tasksById[e.taskId] || {};
       const a = (t.assignee || "—").toLowerCase();
-      if (!byAssignee[a]) byAssignee[a] = { assignee:a, tasks:[], completed:0, onTime:0, breaches:0, budget:0, spend:0, productUnits:0 };
-      const amt = Number(e.editedTotal ?? e.total ?? 0) || 0;
-      byAssignee[a].spend += amt;
+      if (!byAssignee[a]) byAssignee[a] = { assignee:a, completed:0, onTime:0, breaches:0, budget:0, spend:0, productUnits:0 };
+      byAssignee[a].spend += Number(e.editedTotal ?? e.total ?? 0) || 0;
     }
     const rows = Object.values(byAssignee).map(s => {
       const base = s.completed * 10;
       const ontime = s.onTime * 10;
-      const breachPenalty = -(s.breaches * 5); // NO CAP
-      const productBonus = Math.min(20, Math.max(0, s.productUnits * 1)); // monthly cap stays
+      const breachPenalty = -(s.breaches * 5); // no cap
+      const productBonus = Math.min(20, Math.max(0, s.productUnits * 1)); // capped for EoM only
       let budgetBonus = 0;
       if (s.budget > 0) {
         if (s.spend <= s.budget) {
@@ -332,12 +219,14 @@ export default function Admin() {
     }).sort((a,b)=> b.score - a.score);
 
     const winner = rows[0] || null;
-    const top3 = rows.slice(0, Math.min(3, rows.length));
-    const low3 = rows.slice(-Math.min(3, rows.length)).reverse();
-    return { rows, winner, top3, low3 };
-  }, [tasksInRange, expensesInRange, tasksById]);
+    const n = Math.max(1, Math.min(50, Number(eomN)||3));
+    const topN = rows.slice(0, Math.min(n, rows.length));
+    const lowN = rows.slice(-Math.min(n, rows.length)).reverse();
+    return { rows, winner, topN, lowN, n };
+  }, [tasksInRange, expensesInRange, tasksById, eomN]);
 
-  // ---- PERFORMANCE (Overall/Windowed) — OPI with percentile normalization ----
+  /* ---------- PERFORMANCE (OPI) with adjustable N ---------- */
+  const [opiN, setOpiN] = useState(10);
   function percentile(values, v) {
     const arr = (values||[]).slice().sort((a,b)=>a-b);
     const n = arr.length;
@@ -346,20 +235,16 @@ export default function Admin() {
     for (let i=0;i<n;i++) if (arr[i] <= v) countLE++;
     return ((countLE - 1) / (n - 1)) * 100; // 0..100
   }
-
   const performance = useMemo(() => {
-    const per = {}; // assignee -> aggregates
-    // build task-based aggregates
+    const per = {};
     for (const t of tasksInRange) {
       const a = (t.assignee || "—").toLowerCase();
       const limits = t.expenseLimits || {};
       const totalBudget = ["Hotel","Food","Travel","Other"].reduce((s,k)=> s + Number(limits[k]||0), 0);
       const row = per[a] || (per[a] = {
         assignee:a,
-        assigned: 0, completed: 0, onTime: 0, breaches: 0,
-        budget: 0, spend: 0, // spend filled from expenses
-        productUnits: 0,
-        expTotal: 0, expRejected: 0
+        assigned:0, completed:0, onTime:0, breaches:0,
+        budget:0, spend:0, productUnits:0, expTotal:0, expRejected:0
       });
       row.assigned += 1;
       row.budget += totalBudget;
@@ -367,27 +252,19 @@ export default function Admin() {
         row.completed += 1;
         if (!t.slaBreached) row.onTime += 1; else row.breaches += 1;
       }
-      if (Array.isArray(t.items)) {
-        for (const it of t.items) row.productUnits += Number(it?.quantity || 1);
-      }
+      if (Array.isArray(t.items)) for (const it of t.items) row.productUnits += Number(it?.quantity || 1);
     }
-    // expenses
     for (const e of expensesInRange) {
       const t = tasksById[e.taskId] || {};
       const a = (t.assignee || "—").toLowerCase();
-      if (!per[a]) per[a] = {
-        assignee:a, assigned:0, completed:0, onTime:0, breaches:0, budget:0, spend:0, productUnits:0, expTotal:0, expRejected:0
-      };
+      if (!per[a]) per[a] = { assignee:a, assigned:0, completed:0, onTime:0, breaches:0, budget:0, spend:0, productUnits:0, expTotal:0, expRejected:0 };
       const st = (e.approval?.status) || "";
       per[a].expTotal += 1;
-      if (st === "REJECTED") {
-        per[a].expRejected += 1;
-      } else {
-        per[a].spend += Number(e.editedTotal ?? e.total ?? 0) || 0;
-      }
+      if (st === "REJECTED") per[a].expRejected += 1;
+      else per[a].spend += Number(e.editedTotal ?? e.total ?? 0) || 0;
     }
 
-    const rowsBase = Object.values(per).map(r => {
+    const base = Object.values(per).map(r => {
       const completionRate = r.assigned ? r.completed / r.assigned : 0;
       const onTimeRate     = r.completed ? r.onTime   / r.completed : 0;
       const breachRate     = r.completed ? r.breaches / r.completed : 0;
@@ -399,29 +276,24 @@ export default function Admin() {
       const rejectRate     = r.expTotal ? (r.expRejected / r.expTotal) : 0;
       const qualityIndex   = 1 - rejectRate;
 
-      return {
-        ...r,
-        metrics: { completionRate, onTimeRate, breachRate, budgetScore, tasksPer30d, unitsPer30d, qualityIndex }
-      };
+      return { ...r, metrics: { completionRate, onTimeRate, breachRate, budgetScore, tasksPer30d, unitsPer30d, qualityIndex } };
     });
+    if (base.length === 0) return { rows:[], top:[], low:[], n: Math.max(1,Number(opiN)||10) };
 
-    if (rowsBase.length === 0) return { rows: [], top: [], low: [] };
+    const onTimeArr   = base.map(r => r.metrics.onTimeRate);
+    const okBreachArr = base.map(r => 1 - r.metrics.breachRate);
+    const budgetArr   = base.map(r => r.metrics.budgetScore);
+    const tasksArr    = base.map(r => r.metrics.tasksPer30d);
+    const unitsArr    = base.map(r => r.metrics.unitsPer30d);
+    const qualArr     = base.map(r => r.metrics.qualityIndex);
 
-    // percentile normalization
-    const onTimeArr   = rowsBase.map(r => r.metrics.onTimeRate);
-    const okBreachArr = rowsBase.map(r => 1 - r.metrics.breachRate);
-    const budgetArr   = rowsBase.map(r => r.metrics.budgetScore);
-    const tasksArr    = rowsBase.map(r => r.metrics.tasksPer30d);
-    const unitsArr    = rowsBase.map(r => r.metrics.unitsPer30d);
-    const qualArr     = rowsBase.map(r => r.metrics.qualityIndex);
-
-    const rows = rowsBase.map(r => {
+    const rows = base.map(r => {
       const pOnTime   = percentile(onTimeArr,   r.metrics.onTimeRate);
       const pBreachOK = percentile(okBreachArr, 1 - r.metrics.breachRate);
       const pBudget   = percentile(budgetArr,   r.metrics.budgetScore);
       const pTasks    = percentile(tasksArr,    r.metrics.tasksPer30d);
       const pUnits    = percentile(unitsArr,    r.metrics.unitsPer30d);
-      const pProd     = (pTasks + pUnits) / 2; // combine two productivity measures
+      const pProd     = (pTasks + pUnits) / 2;
       const pQual     = percentile(qualArr,     r.metrics.qualityIndex);
 
       const score = Math.round(
@@ -432,31 +304,74 @@ export default function Admin() {
         0.10 * pQual
       );
 
-      return {
-        ...r,
-        percentiles: { pOnTime, pBreachOK, pBudget, pProd, pQual },
-        score
-      };
+      return { ...r, percentiles: { pOnTime, pBreachOK, pBudget, pProd, pQual }, score };
     }).sort((a,b)=> b.score - a.score);
 
-    const top = rows.slice(0, Math.min(10, rows.length));
-    const low = rows.slice(-Math.min(10, rows.length)).reverse();
-    return { rows, top, low };
-  }, [tasksInRange, expensesInRange, tasksById, rangeDays]);
+    const n = Math.max(1, Math.min(50, Number(opiN)||10));
+    const top = rows.slice(0, Math.min(n, rows.length));
+    const low = rows.slice(-Math.min(n, rows.length)).reverse();
+    return { rows, top, low, n };
+  }, [tasksInRange, expensesInRange, tasksById, rangeDays, opiN]);
 
-  // ---- Tasks list + Edit/Delete flow ----
-  const [taskSearch, setTaskSearch] = useState("");
-  const filteredTasks = useMemo(() => {
-    const q = (taskSearch || "").toLowerCase();
-    return (tasks || []).filter(t => {
-      if (!q) return true;
-      return (
-        (t.title || "").toLowerCase().includes(q) ||
-        (t.assignee || "").toLowerCase().includes(q) ||
-        (t.type || "").toLowerCase().includes(q)
-      );
+  /* ---------- UI state: tabs, forms, etc. ---------- */
+  const [tab, setTab] = useState("overview");
+  const [topSpendN, setTopSpendN] = useState(5);
+
+  /* Create task */
+  const [newTask, setNewTask] = useState({
+    title: "", type: "data_collection", assignee: "",
+    slaStartDate: "", slaStartTime: "", slaEndDate: "", slaEndTime: "",
+    expenseLimits: { Hotel:1000, Food:1000, Travel:1000, Other:1000 },
+    items: []
+  });
+  function createAddItem() { setNewTask(prev => ({ ...prev, items: [...(prev.items||[]), {productId:"", quantity:1}] })); }
+  function createUpdateItem(idx, patch) {
+    setNewTask(prev => { const arr = (prev.items||[]).slice(); arr[idx] = { ...arr[idx], ...patch }; return { ...prev, items: arr }; });
+  }
+  function createRemoveItem(idx) { setNewTask(prev => ({ ...prev, items: (prev.items||[]).filter((_,i)=>i!==idx) })); }
+
+  async function createTask(ev){
+    ev.preventDefault();
+    const payload = {
+      tenantId,
+      title: newTask.title,
+      type: newTask.type,
+      assignee: newTask.assignee,
+      slaStart: combineISO(newTask.slaStartDate, newTask.slaStartTime) || undefined,
+      slaEnd:   combineISO(newTask.slaEndDate,   newTask.slaEndTime)   || undefined,
+      expenseLimits: {
+        Hotel: Number(newTask.expenseLimits.Hotel||0),
+        Food:  Number(newTask.expenseLimits.Food||0),
+        Travel:Number(newTask.expenseLimits.Travel||0),
+        Other: Number(newTask.expenseLimits.Other||0)
+      },
+      items: (newTask.items||[])
+        .filter(x => (x.productId||"").trim().length>0)
+        .map(x => ({ productId: x.productId, quantity: Number(x.quantity||1) }))
+    };
+    const r = await fetch(`/api/tasks`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+    const j = await r.json();
+    if (!r.ok) return alert(j.error || "Create task failed");
+    await loadTasks();
+    setNewTask({
+      title: "", type: "data_collection", assignee: "",
+      slaStartDate: "", slaStartTime: "", slaEndDate: "", slaEndTime: "",
+      expenseLimits: { Hotel:1000, Food:1000, Travel:1000, Other:1000 },
+      items: []
     });
-  }, [tasks, taskSearch]);
+    alert("Task created");
+  }
+
+  /* Edit/Delete */
+  const [editOpen, setEditOpen] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [editForm, setEditForm] = useState({
+    title: "", type: "data_collection", assignee: "",
+    slaStartDate: "", slaStartTime: "", slaEndDate: "", slaEndTime: "",
+    expenseLimits: { Hotel:1000, Food:1000, Travel:1000, Other:1000 },
+    items: []
+  });
+  const [savingEdit, setSavingEdit] = useState(false);
 
   function openEdit(t) {
     setEditId(t.id);
@@ -478,21 +393,7 @@ export default function Admin() {
     });
     setEditOpen(true);
   }
-  function closeEdit() {
-    setEditOpen(false); setEditId(null);
-  }
-
-  function openDelete(t) {
-    setDeleteTarget(t);
-    setCascadeDelete(true);
-    setDeleteOpen(true);
-  }
-  function closeDelete() {
-    setDeleteOpen(false);
-    setDeleteTarget(null);
-    setCascadeDelete(true);
-  }
-
+  function closeEdit() { setEditOpen(false); setEditId(null); }
   async function saveEdit() {
     if (!editId) return;
     setSavingEdit(true);
@@ -515,62 +416,59 @@ export default function Admin() {
           .filter(x => (x.productId || "").trim().length > 0)
           .map(x => ({ productId: x.productId, quantity: Number(x.quantity || 1) }))
       };
-
-      const r = await fetch('/api/tasks/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      let j = {};
-      try { j = await r.json(); } catch {}
-      if (!r.ok) {
-        alert(j.error || `Update failed (HTTP ${r.status})`);
-        return;
-      }
-      await loadTasks();
-      closeEdit();
-      alert("Task updated");
-    } catch (e) {
-      alert(e.message || "Update failed");
-    } finally {
-      setSavingEdit(false);
-    }
+      const r = await fetch('/api/tasks/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      let j = {}; try { j = await r.json(); } catch {}
+      if (!r.ok) { alert(j.error || `Update failed (HTTP ${r.status})`); return; }
+      await loadTasks(); closeEdit(); alert("Task updated");
+    } catch (e) { alert(e.message || "Update failed"); }
+    finally { setSavingEdit(false); }
   }
 
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [cascadeDelete, setCascadeDelete] = useState(true);
+  const [deleting, setDeleting] = useState(false);
+  function openDelete(t) { setDeleteTarget(t); setCascadeDelete(true); setDeleteOpen(true); }
+  function closeDelete() { setDeleteOpen(false); setDeleteTarget(null); setCascadeDelete(true); }
   async function confirmDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
       const r = await fetch("/api/tasks/delete", {
-        method: "POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({
-          tenantId,
-          taskId: deleteTarget.id,
-          cascade: !!cascadeDelete
-        })
+        method: "POST", headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ tenantId, taskId: deleteTarget.id, cascade: !!cascadeDelete })
       });
       const j = await r.json().catch(()=>({}));
-      if (!r.ok) {
-        alert(j?.error || `Delete failed (HTTP ${r.status})`);
-        return;
-      }
-      await loadTasks();
-      closeDelete();
+      if (!r.ok) { alert(j?.error || `Delete failed (HTTP ${r.status})`); return; }
+      await loadTasks(); closeDelete();
       alert(`Deleted task ${deleteTarget.title || deleteTarget.id}\nRemoved events: ${j.events||0}, expenses: ${j.expenses||0}`);
-    } catch(e) {
-      alert(e.message || "Delete failed");
-    } finally {
-      setDeleting(false);
-    }
+    } catch(e) { alert(e.message || "Delete failed"); }
+    finally { setDeleting(false); }
   }
 
-  // Filters for All expenses
+  /* Pending decisions */
+  const [decidingId, setDecidingId] = useState(null);
+  const [notes, setNotes] = useState({});
+  async function decide(expenseId, action) {
+    setDecidingId(expenseId);
+    try {
+      const body = { tenantId, expenseId, note: (notes[expenseId]||"").trim() || undefined };
+      const url  = action === "approve" ? "/api/expenses/approve" : "/api/expenses/reject";
+      const r = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+      const j = await r.json();
+      if (!r.ok) return alert(j.error || `Could not ${action}`);
+      setNotes(prev => ({ ...prev, [expenseId]: "" }));
+      await loadPending(); await loadAllExpenses();
+    } catch (e) { alert(e.message || `Could not ${action}`); }
+    finally { setDecidingId(null); }
+  }
+
+  /* ---------- Filters for expenses list ---------- */
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [search, setSearch] = useState("");
   const filtered = useMemo(() => {
     let list = expenses.slice();
-    if (statusFilter !== "ALL") {
-      list = list.filter(e => (e.approval?.status || "") === statusFilter);
-    }
+    if (statusFilter !== "ALL") list = list.filter(e => (e.approval?.status || "") === statusFilter);
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(e => {
@@ -585,144 +483,126 @@ export default function Admin() {
     return list;
   }, [expenses, statusFilter, search, tasksById]);
 
+  /* ---------- Tasks filtering ---------- */
+  const [taskSearch, setTaskSearch] = useState("");
+  const filteredTasks = useMemo(() => {
+    const q = (taskSearch || "").toLowerCase();
+    return (tasks || []).filter(t => {
+      if (!q) return true;
+      return (
+        (t.title || "").toLowerCase().includes(q) ||
+        (t.assignee || "").toLowerCase().includes(q) ||
+        (t.type || "").toLowerCase().includes(q)
+      );
+    });
+  }, [tasks, taskSearch]);
+
+  /* ---------- Render ---------- */
   return (
     <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto"}}>
       <h1>Admin</h1>
       <div style={{marginBottom:12, color:"#444"}}>Signed in as: <strong>{me?.userDetails || "—"}</strong></div>
 
-      {/* DASHBOARD */}
-      <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
-        <h2 style={{marginTop:0}}>Dashboard</h2>
-
-        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, maxWidth:600, alignItems:"end", marginBottom:12}}>
+      {/* Global date filters (affect all tabs) */}
+      <div style={{
+        position:"sticky", top:0, background:"#fff", zIndex:20,
+        border:"1px solid #eee", borderRadius:8, padding:"10px 12px", marginBottom:12
+      }}>
+        <div style={{display:"flex", gap:12, flexWrap:"wrap", alignItems:"end"}}>
           <label>From (date)
             <input type="date" value={reportFrom} onChange={e=>setReportFrom(e.target.value)} />
           </label>
           <label>To (date)
             <input type="date" value={reportTo} onChange={e=>setReportTo(e.target.value)} />
           </label>
+          <button onClick={downloadReport}>Download CSV</button>
+          <span style={{fontSize:12, color:"#666"}}>These filters apply to Overview/Performance/EoM and KPIs/charts.</span>
         </div>
 
-        {/* KPI cards */}
-        <div style={{display:"grid", gridTemplateColumns:"repeat(3, minmax(160px, 1fr))", gap:12, marginBottom:12}}>
-          <KPI title="Open tasks" value={kpis.open} />
-          <KPI title="Completed tasks" value={kpis.completed} />
-          <KPI title="SLA breach rate" value={`${kpis.breachRate.toFixed(1)}%`} />
+        {/* Tabs */}
+        <div style={{marginTop:10, display:"flex", gap:8, flexWrap:"wrap"}}>
+          {["overview","performance","eom","products","tasks","expenses","reports"].map(id=>{
+            const labelMap = {
+              overview:"Overview", performance:"Performance", eom:"EoM",
+              products:"Products", tasks:"Tasks", expenses:"Expenses", reports:"Reports"
+            };
+            const active = tab===id;
+            return (
+              <button key={id}
+                onClick={()=>setTab(id)}
+                style={{
+                  padding:"6px 10px", borderRadius:8,
+                  background: active ? "#eef6ff" : "#f7f7f7",
+                  border: active ? "1px solid #c9e1ff" : "1px solid #e7e7e7",
+                  color:"#123"
+                }}
+              >{labelMap[id]}</button>
+            );
+          })}
         </div>
+      </div>
 
-        {/* CHARTS (interactive) */}
-        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, alignItems:"start"}}>
-          <div>
-            <h3 style={{margin:"8px 0"}}>Spend vs Budget (by category)</h3>
-            <InteractiveGroupedBars
-              categories={["Hotel","Food","Travel","Other"]}
-              series={[
-                { name: "Budget", values: ["Hotel","Food","Travel","Other"].map(k=>Number(kpis.budget[k]||0)) },
-                { name: "Spend",  values: ["Hotel","Food","Travel","Other"].map(k=>Number(kpis.spend[k]||0)) }
-              ]}
-              height={240}
-            />
+      {/* -------- TABS CONTENT -------- */}
+
+      {/* OVERVIEW */}
+      {tab==="overview" && (
+        <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
+          <h2 style={{marginTop:0}}>Overview</h2>
+
+          {/* KPI cards */}
+          <div style={{display:"grid", gridTemplateColumns:"repeat(3, minmax(160px, 1fr))", gap:12, marginBottom:12}}>
+            <KPI title="Open tasks" value={kpis.open} />
+            <KPI title="Completed tasks" value={kpis.completed} />
+            <KPI title="SLA breach rate" value={`${kpis.breachRate.toFixed(1)}%`} />
           </div>
-          <div>
-            <h3 style={{margin:"8px 0"}}>Top spenders</h3>
-            <InteractiveHBar
-              data={(kpis.top||[]).map(r => ({ label: r.assignee || "—", value: Number(r.total||0) }))}
-              height={240}
-              maxBars={5}
-            />
+
+          {/* CHARTS */}
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, alignItems:"start"}}>
+            <div>
+              <h3 style={{margin:"8px 0"}}>Spend vs Budget (by category)</h3>
+              <InteractiveGroupedBars
+                categories={["Hotel","Food","Travel","Other"]}
+                series={[
+                  { name: "Budget", values: ["Hotel","Food","Travel","Other"].map(k=>Number(kpis.budget[k]||0)) },
+                  { name: "Spend",  values: ["Hotel","Food","Travel","Other"].map(k=>Number(kpis.spend[k]||0)) }
+                ]}
+                height={240}
+              />
+            </div>
+            <div>
+              <div style={{display:"flex", alignItems:"baseline", justifyContent:"space-between"}}>
+                <h3 style={{margin:"8px 0"}}>Top spenders</h3>
+                <label style={{fontSize:12}}>Top N&nbsp;
+                  <input type="number" min="1" max="50" value={topSpendN} onChange={e=>setTopSpendN(Number(e.target.value||5))} style={{width:64}}/>
+                </label>
+              </div>
+              <InteractiveHBar
+                data={(kpis.rankedSpenders||[]).slice(0, Math.max(1, topSpendN)).map(r => ({ label: r.assignee || "—", value: Number(r.total||0) }))}
+                height={240}
+                maxBars={Math.max(1, topSpendN)}
+              />
+            </div>
           </div>
-        </div>
+        </section>
+      )}
 
-        {/* EOM */}
-        <div style={{marginTop:16}}>
-          <h3 style={{margin:"8px 0"}}>Employee of the Month</h3>
-          {(!eom.rows || eom.rows.length===0) ? (
-            <div style={{color:"#666"}}>No activity in this range.</div>
-          ) : (
-            <>
-              <div style={{padding:"8px 10px", border:"1px dashed #d7e7d7", borderRadius:8, background:"#f7fff7", marginBottom:8}}>
-                🏆 <strong>Winner:</strong> {eom.winner.assignee || "—"} &nbsp;—&nbsp;
-                <strong>Score:</strong> {eom.winner.score} &nbsp;|&nbsp;
-                <strong>Completed:</strong> {eom.winner.completed} &nbsp;|&nbsp;
-                <strong>On-time:</strong> {eom.winner.onTime} &nbsp;|&nbsp;
-                <strong>SLA breaches:</strong> {eom.winner.breaches} &nbsp;|&nbsp;
-                <strong>Products worked:</strong> {eom.winner.productUnits} &nbsp;|&nbsp;
-                <strong>Spend/Budget:</strong> {ru(eom.winner.spend)} / {ru(eom.winner.budget)}
-              </div>
+      {/* PERFORMANCE */}
+      {tab==="performance" && (
+        <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
+          <div style={{display:"flex", alignItems:"baseline", justifyContent:"space-between"}}>
+            <h2 style={{marginTop:0}}>Performance (Overall / Windowed)</h2>
+            <label>Top/Bottom N&nbsp;
+              <input type="number" min="1" max="50" value={opiN} onChange={e=>setOpiN(Number(e.target.value||10))} style={{width:72}}/>
+            </label>
+          </div>
 
-              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, margin:"8px 0 12px"}}>
-                <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
-                  <div style={{fontWeight:700, marginBottom:6}}>Top 3 performers</div>
-                  <ol style={{margin:0, paddingLeft:18}}>
-                    {eom.top3.map((r) => (
-                      <li key={`top-${r.assignee}`} style={{margin:"4px 0"}}>
-                        <strong>{r.assignee || "—"}</strong> &nbsp;—&nbsp; Score: {r.score}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-                <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
-                  <div style={{fontWeight:700, marginBottom:6}}>Top 3 low performers</div>
-                  <ol style={{margin:0, paddingLeft:18}}>
-                    {eom.low3.map((r) => (
-                      <li key={`low-${r.assignee}`} style={{margin:"4px 0"}}>
-                        <strong>{r.assignee || "—"}</strong> &nbsp;—&nbsp; Score: {r.score}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              </div>
-
-              <div style={{overflowX:"auto"}}>
-                <table style={{borderCollapse:"collapse", width:"100%", minWidth:860}}>
-                  <thead>
-                    <tr style={{textAlign:"left", borderBottom:"1px solid #eee"}}>
-                      <th style={{padding:"6px 8px"}}>#</th>
-                      <th style={{padding:"6px 8px"}}>Employee</th>
-                      <th style={{padding:"6px 8px"}}>Score</th>
-                      <th style={{padding:"6px 8px"}}>Completed</th>
-                      <th style={{padding:"6px 8px"}}>On-time</th>
-                      <th style={{padding:"6px 8px"}}>SLA breaches</th>
-                      <th style={{padding:"6px 8px"}}>Products worked</th>
-                      <th style={{padding:"6px 8px"}}>Spend</th>
-                      <th style={{padding:"6px 8px"}}>Budget</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {eom.rows.map((r, i) => (
-                      <tr key={r.assignee} style={{borderBottom:"1px solid #f4f4f4", background: i===0 ? "#fffbef" : undefined}}>
-                        <td style={{padding:"6px 8px"}}>{i+1}</td>
-                        <td style={{padding:"6px 8px"}}><strong>{r.assignee || "—"}</strong></td>
-                        <td style={{padding:"6px 8px"}}>{r.score}</td>
-                        <td style={{padding:"6px 8px"}}>{r.completed}</td>
-                        <td style={{padding:"6px 8px"}}>{r.onTime}</td>
-                        <td style={{padding:"6px 8px"}}>{r.breaches}</td>
-                        <td style={{padding:"6px 8px"}}>{r.productUnits}</td>
-                        <td style={{padding:"6px 8px"}}>{ru(r.spend)}</td>
-                        <td style={{padding:"6px 8px"}}>{ru(r.budget)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div style={{fontSize:12, color:"#666", marginTop:6}}>
-                Scoring: +10/completed, +10/on-time, <strong>−5 per SLA breach (no cap)</strong>, +1/product unit (cap +20),
-                and ± up to 20 for budget under/over vs total budget.
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* PERFORMANCE (Overall/Windowed) */}
-        <div style={{marginTop:18}}>
-          <h3 style={{margin:"8px 0"}}>Performance (Overall / Windowed)</h3>
           {(!performance.rows || performance.rows.length===0) ? (
             <div style={{color:"#666"}}>No data in this range.</div>
           ) : (
             <>
               <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, margin:"8px 0 12px"}}>
                 <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
-                  <div style={{fontWeight:700, marginBottom:6}}>Top 10 by OPI</div>
+                  <div style={{fontWeight:700, marginBottom:6}}>Top {performance.n} by OPI</div>
                   <ol style={{margin:0, paddingLeft:18}}>
                     {performance.top.map((r) => (
                       <li key={`opi-top-${r.assignee}`} style={{margin:"4px 0"}}>
@@ -733,7 +613,7 @@ export default function Admin() {
                   </ol>
                 </div>
                 <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
-                  <div style={{fontWeight:700, marginBottom:6}}>Bottom 10 by OPI</div>
+                  <div style={{fontWeight:700, marginBottom:6}}>Bottom {performance.n} by OPI</div>
                   <ol style={{margin:0, paddingLeft:18}}>
                     {performance.low.map((r) => (
                       <li key={`opi-low-${r.assignee}`} style={{margin:"4px 0"}}>
@@ -782,321 +662,378 @@ export default function Admin() {
                 </table>
               </div>
               <div style={{fontSize:12, color:"#666", marginTop:6}}>
-                OPI = 0.30·On-time (percentile) + 0.20·SLA (1−breach, percentile) + 0.20·Budget discipline (percentile)
+                OPI = 0.30·On-time (percentile) + 0.20·SLA (1−breach, percentile) + 0.20·Budget (percentile)
                 + 0.20·Productivity (tasks+units, percentile) + 0.10·Quality (1−reject rate, percentile).
               </div>
             </>
           )}
-        </div>
-      </section>
+        </section>
+      )}
 
-      {/* Reports */}
-      <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
-        <h2 style={{marginTop:0}}>Reports</h2>
-        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr auto", gap:8, alignItems:"end", maxWidth:600}}>
-          <label>From (date)
-            <input type="date" value={reportFrom} onChange={e=>setReportFrom(e.target.value)} />
-          </label>
-          <label>To (date)
-            <input type="date" value={reportTo} onChange={e=>setReportTo(e.target.value)} />
-          </label>
-          <button onClick={downloadReport}>Download CSV</button>
-        </div>
-        <div style={{fontSize:12, color:"#666", marginTop:6}}>
-          Leave fields blank for an all-time report. “To” is inclusive here (CSV logic matches).
-        </div>
-      </section>
+      {/* EoM */}
+      {tab==="eom" && (
+        <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
+          <div style={{display:"flex", alignItems:"baseline", justifyContent:"space-between"}}>
+            <h2 style={{marginTop:0}}>Employee of the Month</h2>
+            <label>Top/Low N&nbsp;
+              <input type="number" min="1" max="50" value={eom.n} onChange={e=>setEomN(Number(e.target.value||3))} style={{width:72}}/>
+            </label>
+          </div>
 
-      {/* Products admin */}
-      <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
-        <h2 style={{marginTop:0}}>Products</h2>
-        <form onSubmit={async (ev) => {
-          ev.preventDefault();
-          const name = (newProduct.name||"").trim();
-          const sku  = (newProduct.sku||"").trim();
-          if (!name) { alert("Enter a product name"); return; }
-          setSavingProduct(true);
-          try {
-            const body = { tenantId, name, sku: sku || undefined };
-            const r = await fetch(`/api/products`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
-            const j = await r.json();
-            if (!r.ok) return alert(j.error || "Could not create product");
-            setNewProduct({ name:"", sku:"" });
-            await loadProducts();
-            alert("Product created");
-          } catch (e) {
-            alert(e.message || "Could not create product");
-          } finally {
-            setSavingProduct(false);
-          }
-        }} style={{display:"grid", gridTemplateColumns:"2fr 1fr auto", gap:8, alignItems:"end", maxWidth:700}}>
-          <label>Name
-            <input value={newProduct.name} onChange={e=>setNewProduct({...newProduct, name:e.target.value})}/>
-          </label>
-          <label>SKU (optional)
-            <input value={newProduct.sku} onChange={e=>setNewProduct({...newProduct, sku:e.target.value})}/>
-          </label>
-          <button type="submit" disabled={savingProduct}>{savingProduct ? "Saving…" : "Add product"}</button>
-        </form>
-        <div style={{marginTop:12}}>
-          {products.length === 0 ? (
-            <p style={{color:"#666"}}>No products yet.</p>
+          {(!eom.rows || eom.rows.length===0) ? (
+            <div style={{color:"#666"}}>No activity in this range.</div>
           ) : (
-            <ul>
-              {products.map(p => (
-                <li key={p.id || p.productId}>
-                  {p.name || p.title || (p.id || p.productId)}{p.sku ? ` — ${p.sku}` : ""}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
+            <>
+              <div style={{padding:"8px 10px", border:"1px dashed #d7e7d7", borderRadius:8, background:"#f7fff7", marginBottom:8}}>
+                🏆 <strong>Winner:</strong> {eom.winner.assignee || "—"} &nbsp;—&nbsp;
+                <strong>Score:</strong> {eom.winner.score} &nbsp;|&nbsp;
+                <strong>Completed:</strong> {eom.winner.completed} &nbsp;|&nbsp;
+                <strong>On-time:</strong> {eom.winner.onTime} &nbsp;|&nbsp;
+                <strong>SLA breaches:</strong> {eom.winner.breaches} &nbsp;|&nbsp;
+                <strong>Products worked:</strong> {eom.winner.productUnits} &nbsp;|&nbsp;
+                <strong>Spend/Budget:</strong> {ru(eom.winner.spend)} / {ru(eom.winner.budget)}
+              </div>
 
-      {/* Create task */}
-      <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
-        <h2 style={{marginTop:0}}>Create task</h2>
-        <form onSubmit={createTask} style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8}}>
-          <label>Title
-            <input value={newTask.title} onChange={e=>setNewTask({...newTask, title:e.target.value})}/>
-          </label>
-          <label>Assignee (email)
-            <input value={newTask.assignee} onChange={e=>setNewTask({...newTask, assignee:e.target.value})}/>
-          </label>
-          <label>Type
-            <select value={newTask.type} onChange={e=>setNewTask({...newTask, type:e.target.value})}>
-              <option value="data_collection">Data collection</option>
-              <option value="product_execution">Product execution</option>
-              <option value="revisit">Revisit (issue)</option>
-            </select>
-          </label>
-
-          <label>SLA start (date)
-            <input type="date" value={newTask.slaStartDate} onChange={e=>setNewTask({...newTask, slaStartDate:e.target.value})}/>
-          </label>
-          <label>SLA start (time)
-            <input type="time" value={newTask.slaStartTime} onChange={e=>setNewTask({...newTask, slaStartTime:e.target.value})}/>
-          </label>
-          <label>SLA end (date)
-            <input type="date" value={newTask.slaEndDate} onChange={e=>setNewTask({...newTask, slaEndDate:e.target.value})}/>
-          </label>
-          <label>SLA end (time)
-            <input type="time" value={newTask.slaEndTime} onChange={e=>setNewTask({...newTask, slaEndTime:e.target.value})}/>
-          </label>
-          <div/>
-
-          <div style={{gridColumn:"1 / -1", display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8}}>
-            {["Hotel","Food","Travel","Other"].map(k=>(
-              <label key={k}>{k} limit (₹)
-                <input type="number" step="0.01"
-                  value={newTask.expenseLimits[k]}
-                  onChange={e=>setNewTask({...newTask, expenseLimits:{...newTask.expenseLimits, [k]: Number(e.target.value||0)}})}/>
-              </label>
-            ))}
-          </div>
-
-          <div style={{gridColumn:"1 / -1", marginTop:6}}>
-            <strong>Products for this task</strong>
-            <div style={{marginTop:6}}>
-              {(newTask.items||[]).map((row, idx) => (
-                <div key={idx} style={{display:"grid", gridTemplateColumns:"3fr 1fr auto", gap:8, alignItems:"end", marginBottom:8, maxWidth:700}}>
-                  <label>Product
-                    <select value={row.productId} onChange={e=>createUpdateItem(idx, {productId: e.target.value})}>
-                      <option value="">— Select —</option>
-                      {products.map(p => (
-                        <option key={p.id || p.productId} value={p.id || p.productId}>
-                          {p.name || p.title || (p.id || p.productId)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>Qty
-                    <input type="number" min="1" step="1" value={row.quantity}
-                           onChange={e=>createUpdateItem(idx, {quantity: Number(e.target.value || 1)})}/>
-                  </label>
-                  <button type="button" onClick={()=>createRemoveItem(idx)}>Remove</button>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, margin:"8px 0 12px"}}>
+                <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
+                  <div style={{fontWeight:700, marginBottom:6}}>Top {eom.n} performers</div>
+                  <ol style={{margin:0, paddingLeft:18}}>
+                    {eom.topN.map((r) => (
+                      <li key={`top-${r.assignee}`} style={{margin:"4px 0"}}>
+                        <strong>{r.assignee || "—"}</strong> &nbsp;—&nbsp; Score: {r.score}
+                      </li>
+                    ))}
+                  </ol>
                 </div>
-              ))}
-              <button type="button" onClick={createAddItem}>Add product</button>
-            </div>
-          </div>
+                <div style={{border:"1px solid #eee", borderRadius:8, padding:"8px 10px"}}>
+                  <div style={{fontWeight:700, marginBottom:6}}>Top {eom.n} low performers</div>
+                  <ol style={{margin:0, paddingLeft:18}}>
+                    {eom.lowN.map((r) => (
+                      <li key={`low-${r.assignee}`} style={{margin:"4px 0"}}>
+                        <strong>{r.assignee || "—"}</strong> &nbsp;—&nbsp; Score: {r.score}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              </div>
 
-          <div style={{gridColumn:"1 / -1", marginTop:8}}>
-            <button type="submit">Create</button>
-          </div>
-        </form>
-      </section>
+              <div style={{overflowX:"auto"}}>
+                <table style={{borderCollapse:"collapse", width:"100%", minWidth:860}}>
+                  <thead>
+                    <tr style={{textAlign:"left", borderBottom:"1px solid #eee"}}>
+                      <th style={{padding:"6px 8px"}}>#</th>
+                      <th style={{padding:"6px 8px"}}>Employee</th>
+                      <th style={{padding:"6px 8px"}}>Score</th>
+                      <th style={{padding:"6px 8px"}}>Completed</th>
+                      <th style={{padding:"6px 8px"}}>On-time</th>
+                      <th style={{padding:"6px 8px"}}>SLA breaches</th>
+                      <th style={{padding:"6px 8px"}}>Products worked</th>
+                      <th style={{padding:"6px 8px"}}>Spend</th>
+                      <th style={{padding:"6px 8px"}}>Budget</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {eom.rows.map((r, i) => (
+                      <tr key={r.assignee} style={{borderBottom:"1px solid #f4f4f4", background: i===0 ? "#fffbef" : undefined}}>
+                        <td style={{padding:"6px 8px"}}>{i+1}</td>
+                        <td style={{padding:"6px 8px"}}><strong>{r.assignee || "—"}</strong></td>
+                        <td style={{padding:"6px 8px"}}>{r.score}</td>
+                        <td style={{padding:"6px 8px"}}>{r.completed}</td>
+                        <td style={{padding:"6px 8px"}}>{r.onTime}</td>
+                        <td style={{padding:"6px 8px"}}>{r.breaches}</td>
+                        <td style={{padding:"6px 8px"}}>{r.productUnits}</td>
+                        <td style={{padding:"6px 8px"}}>{ru(r.spend)}</td>
+                        <td style={{padding:"6px 8px"}}>{ru(r.budget)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{fontSize:12, color:"#666", marginTop:6}}>
+                Scoring: +10/completed, +10/on-time, <strong>−5 per SLA breach (no cap)</strong>, +1/product unit (cap +20),
+                and ± up to 20 for budget under/over vs total budget. (Cap is only for monthly EoM.)
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
-      {/* Tasks list with Edit + Delete */}
-      <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
-        <h2 style={{marginTop:0}}>Tasks</h2>
-        <div style={{marginBottom:8}}>
-          <input placeholder="Search title, assignee, type" value={taskSearch} onChange={e=>setTaskSearch(e.target.value)} style={{width:"100%", maxWidth:420}}/>
-        </div>
-        {filteredTasks.length === 0 ? <p>No tasks.</p> : (
-          <div style={{overflowX:"auto"}}>
-            <table style={{borderCollapse:"collapse", width:"100%"}}>
-              <thead>
-                <tr style={{textAlign:"left", borderBottom:"1px solid #eee"}}>
-                  <th style={{padding:"8px"}}>Title</th>
-                  <th style={{padding:"8px"}}>Assignee</th>
-                  <th style={{padding:"8px"}}>Type</th>
-                  <th style={{padding:"8px"}}>SLA</th>
-                  <th style={{padding:"8px"}}>#Products</th>
-                  <th style={{padding:"8px"}}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredTasks.map(t => (
-                  <tr key={t.id} style={{borderBottom:"1px solid #f4f4f4"}}>
-                    <td style={{padding:"8px"}}>{t.title || t.id}</td>
-                    <td style={{padding:"8px"}}>{t.assignee || "—"}</td>
-                    <td style={{padding:"8px"}}>{t.type || "—"}</td>
-                    <td style={{padding:"8px"}}>
-                      {(t.slaStart ? new Date(t.slaStart).toLocaleString() : "—")} → {(t.slaEnd ? new Date(t.slaEnd).toLocaleString() : "—")}
-                    </td>
-                    <td style={{padding:"8px"}}>{Array.isArray(t.items) ? t.items.length : 0}</td>
-                    <td style={{padding:"8px", display:"flex", gap:8}}>
-                      <button onClick={()=>openEdit(t)}>Edit</button>
-                      <button style={{background:"#fff0f0", border:"1px solid #f2b5b5", color:"#8a0b0b"}} onClick={()=>openDelete(t)}>Delete</button>
-                    </td>
-                  </tr>
+      {/* PRODUCTS */}
+      {tab==="products" && (
+        <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
+          <h2 style={{marginTop:0}}>Products</h2>
+          <ProductAdmin products={products} reload={loadProducts} tenantId={tenantId}/>
+        </section>
+      )}
+
+      {/* TASKS */}
+      {tab==="tasks" && (
+        <>
+          <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
+            <h2 style={{marginTop:0}}>Create task</h2>
+            <form onSubmit={createTask} style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8}}>
+              <label>Title
+                <input value={newTask.title} onChange={e=>setNewTask({...newTask, title:e.target.value})}/>
+              </label>
+              <label>Assignee (email)
+                <input value={newTask.assignee} onChange={e=>setNewTask({...newTask, assignee:e.target.value})}/>
+              </label>
+              <label>Type
+                <select value={newTask.type} onChange={e=>setNewTask({...newTask, type:e.target.value})}>
+                  <option value="data_collection">Data collection</option>
+                  <option value="product_execution">Product execution</option>
+                  <option value="revisit">Revisit (issue)</option>
+                </select>
+              </label>
+
+              <label>SLA start (date)
+                <input type="date" value={newTask.slaStartDate} onChange={e=>setNewTask({...newTask, slaStartDate:e.target.value})}/>
+              </label>
+              <label>SLA start (time)
+                <input type="time" value={newTask.slaStartTime} onChange={e=>setNewTask({...newTask, slaStartTime:e.target.value})}/>
+              </label>
+              <label>SLA end (date)
+                <input type="date" value={newTask.slaEndDate} onChange={e=>setNewTask({...newTask, slaEndDate:e.target.value})}/>
+              </label>
+              <label>SLA end (time)
+                <input type="time" value={newTask.slaEndTime} onChange={e=>setNewTask({...newTask, slaEndTime:e.target.value})}/>
+              </label>
+              <div/>
+
+              <div style={{gridColumn:"1 / -1", display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8}}>
+                {["Hotel","Food","Travel","Other"].map(k=>(
+                  <label key={k}>{k} limit (₹)
+                    <input type="number" step="0.01"
+                      value={newTask.expenseLimits[k]}
+                      onChange={e=>setNewTask({...newTask, expenseLimits:{...newTask.expenseLimits, [k]: Number(e.target.value||0)}})}/>
+                  </label>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+              </div>
 
-      {/* Expenses pending review */}
-      <section style={{border:"1px solid #eee", borderRadius:8, padding:12}}>
-        <h2 style={{marginTop:0}}>Expenses pending review</h2>
-        {loadingPending ? <p>Loading…</p> :
-          (pending.length === 0 ? <p>No expenses awaiting review.</p> :
-            <ul style={{listStyle:"none", padding:0, margin:0}}>
-              {pending.map(e => {
-                const t = tasksById[e.taskId] || {};
-                const amount = Number(e.editedTotal ?? e.total ?? 0) || 0;
-                const cat = e.category || "Other";
-                const remBefore = e.approval?.remainingBefore;
-                const limit = e.approval?.limit;
-                const ocrDiff = (e.editedTotal != null) && (Number(e.editedTotal) !== Number(e.total));
-                return (
-                  <li key={e.id} style={{padding:"12px 0", borderBottom:"1px solid #f1f1f1"}}>
-                    <div style={{display:"flex", justifyContent:"space-between", gap:12, flexWrap:"wrap"}}>
-                      <div>
-                        <div style={{display:"flex", gap:8, alignItems:"center"}}>
-                          <strong>{t.title || e.taskId}</strong>
-                          <StatusTag s={e.approval?.status}/>
-                        </div>
-                        <div style={{fontSize:12, color:"#666"}}>
-                          Assignee: {t.assignee || "—"} • Category: {cat} • Amount: {ru(amount)}
-                          {ocrDiff && <span style={{marginLeft:8, color:"#b25"}}>edited (OCR was {ru(e.total)})</span>}
-                        </div>
-                        <div style={{fontSize:12, color:"#666"}}>
-                          Limit: {ru(limit)} • Remaining before: {ru(remBefore)}
-                        </div>
-                      </div>
-                      <div style={{minWidth:220}}>
-                        <button onClick={() => openReceipt(e)}>Open receipt</button>
-                      </div>
-                    </div>
-
-                    <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:8, maxWidth:700}}>
-                      <label>Decision note (optional)
-                        <input
-                          value={notes[e.id] || ""}
-                          onChange={ev=>setNotes({...notes, [e.id]: ev.target.value})}
-                          placeholder="Explain approval/rejection (shared with employee)"
-                        />
+              <div style={{gridColumn:"1 / -1", marginTop:6}}>
+                <strong>Products for this task</strong>
+                <div style={{marginTop:6}}>
+                  {(newTask.items||[]).map((row, idx) => (
+                    <div key={idx} style={{display:"grid", gridTemplateColumns:"3fr 1fr auto", gap:8, alignItems:"end", marginBottom:8, maxWidth:700}}>
+                      <label>Product
+                        <select value={row.productId} onChange={e=>createUpdateItem(idx, {productId: e.target.value})}>
+                          <option value="">— Select —</option>
+                          {products.map(p => (
+                            <option key={p.id || p.productId} value={p.id || p.productId}>
+                              {p.name || p.title || (p.id || p.productId)}
+                            </option>
+                          ))}
+                        </select>
                       </label>
-                      <div style={{display:"flex", alignItems:"end", gap:8}}>
-                        <button
-                          onClick={() => decide(e.id, "approve")}
-                          disabled={decidingId === e.id}
-                        >{decidingId === e.id ? "Working…" : "Approve"}</button>
-                        <button
-                          onClick={() => {
-                            if (!(notes[e.id] || "").trim()) {
-                              alert("Please write a rejection reason.");
-                              return;
-                            }
-                            decide(e.id, "reject");
-                          }}
-                          disabled={decidingId === e.id}
-                        >{decidingId === e.id ? "Working…" : "Reject"}</button>
-                      </div>
+                      <label>Qty
+                        <input type="number" min="1" step="1" value={row.quantity}
+                               onChange={e=>createUpdateItem(idx, {quantity: Number(e.target.value || 1)})}/>
+                      </label>
+                      <button type="button" onClick={()=>createRemoveItem(idx)}>Remove</button>
                     </div>
-                  </li>
-                );
-              })}
-            </ul>
-        )}
-      </section>
+                  ))}
+                  <button type="button" onClick={createAddItem}>Add product</button>
+                </div>
+              </div>
 
-      {/* All expenses */}
-      <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginTop:18}}>
-        <h2 style={{marginTop:0}}>All expenses</h2>
+              <div style={{gridColumn:"1 / -1", marginTop:8}}>
+                <button type="submit">Create</button>
+              </div>
+            </form>
+          </section>
 
-        <div style={{display:"flex", gap:8, flexWrap:"wrap", marginBottom:10}}>
-          <label>Status&nbsp;
-            <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}>
-              <option value="ALL">All</option>
-              <option value="PENDING_REVIEW">Pending</option>
-              <option value="AUTO_APPROVED">Auto-approved</option>
-              <option value="APPROVED">Approved</option>
-              <option value="REJECTED">Rejected</option>
-            </select>
-          </label>
-          <input
-            placeholder="Search: task title, assignee, merchant"
-            value={search}
-            onChange={e=>setSearch(e.target.value)}
-            style={{flex:"1 1 300px"}}
-          />
-        </div>
+          <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
+            <h2 style={{marginTop:0}}>Tasks</h2>
+            <div style={{marginBottom:8}}>
+              <input placeholder="Search title, assignee, type" value={taskSearch} onChange={e=>setTaskSearch(e.target.value)} style={{width:"100%", maxWidth:420}}/>
+            </div>
+            {filteredTasks.length === 0 ? <p>No tasks.</p> : (
+              <div style={{overflowX:"auto"}}>
+                <table style={{borderCollapse:"collapse", width:"100%"}}>
+                  <thead>
+                    <tr style={{textAlign:"left", borderBottom:"1px solid #eee"}}>
+                      <th style={{padding:"8px"}}>Title</th>
+                      <th style={{padding:"8px"}}>Assignee</th>
+                      <th style={{padding:"8px"}}>Type</th>
+                      <th style={{padding:"8px"}}>SLA</th>
+                      <th style={{padding:"8px"}}>#Products</th>
+                      <th style={{padding:"8px"}}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredTasks.map(t => (
+                      <tr key={t.id} style={{borderBottom:"1px solid #f4f4f4"}}>
+                        <td style={{padding:"8px"}}>{t.title || t.id}</td>
+                        <td style={{padding:"8px"}}>{t.assignee || "—"}</td>
+                        <td style={{padding:"8px"}}>{t.type || "—"}</td>
+                        <td style={{padding:"8px"}}>
+                          {(t.slaStart ? new Date(t.slaStart).toLocaleString() : "—")} → {(t.slaEnd ? new Date(t.slaEnd).toLocaleString() : "—")}
+                        </td>
+                        <td style={{padding:"8px"}}>{Array.isArray(t.items) ? t.items.length : 0}</td>
+                        <td style={{padding:"8px", display:"flex", gap:8}}>
+                          <button onClick={()=>openEdit(t)}>Edit</button>
+                          <button style={{background:"#fff0f0", border:"1px solid #f2b5b5", color:"#8a0b0b"}} onClick={()=>openDelete(t)}>Delete</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </>
+      )}
 
-        {loadingAll ? <p>Loading…</p> :
-          ((() => {
-            const list = filtered;
-            if (list.length === 0) return <p>No expenses match the filter.</p>;
-            return (
-              <ul style={{listStyle:"none", padding:0, margin:0}}>
-                {list.map(e => {
-                  const t = tasksById[e.taskId] || {};
-                  const amount = Number(e.editedTotal ?? e.total ?? 0) || 0;
-                  const ocrDiff = (e.editedTotal != null) && (Number(e.editedTotal) !== Number(e.total));
-                  const cat = e.category || "Other";
-                  return (
-                    <li key={e.id} style={{padding:"10px 0", borderBottom:"1px solid #f3f3f3"}}>
-                      <div style={{display:"flex", justifyContent:"space-between", gap:12, flexWrap:"wrap"}}>
-                        <div>
-                          <div style={{display:"flex", gap:8, alignItems:"center"}}>
-                            <strong>{t.title || e.taskId}</strong>
-                            <StatusTag s={e.approval?.status}/>
-                          </div>
-                          <div style={{fontSize:12, color:"#666"}}>
-                            {new Date(e.createdAt).toLocaleString()} • Assignee: {t.assignee || "—"} • Category: {cat} • Amount: {ru(amount)}
-                            {ocrDiff && <span style={{marginLeft:8, color:"#b25"}}>edited (OCR was {ru(e.total)})</span>}
-                          </div>
-                          {e.approval?.note && e.approval?.status === "REJECTED" && (
-                            <div style={{marginTop:6, fontSize:12, color:"#b22"}}>
-                              Admin rejection note: {e.approval.note}
+      {/* EXPENSES */}
+      {tab==="expenses" && (
+        <>
+          <section style={{border:"1px solid #eee", borderRadius:8, padding:12}}>
+            <h2 style={{marginTop:0}}>Expenses pending review</h2>
+            {loadingPending ? <p>Loading…</p> :
+              (pending.length === 0 ? <p>No expenses awaiting review.</p> :
+                <ul style={{listStyle:"none", padding:0, margin:0}}>
+                  {pending.map(e => {
+                    const t = tasksById[e.taskId] || {};
+                    const amount = Number(e.editedTotal ?? e.total ?? 0) || 0;
+                    const cat = e.category || "Other";
+                    const remBefore = e.approval?.remainingBefore;
+                    const limit = e.approval?.limit;
+                    const ocrDiff = (e.editedTotal != null) && (Number(e.editedTotal) !== Number(e.total));
+                    return (
+                      <li key={e.id} style={{padding:"12px 0", borderBottom:"1px solid #f1f1f1"}}>
+                        <div style={{display:"flex", justifyContent:"space-between", gap:12, flexWrap:"wrap"}}>
+                          <div>
+                            <div style={{display:"flex", gap:8, alignItems:"center"}}>
+                              <strong>{t.title || e.taskId}</strong>
+                              <StatusTag s={e.approval?.status}/>
                             </div>
-                          )}
+                            <div style={{fontSize:12, color:"#666"}}>
+                              Assignee: {t.assignee || "—"} • Category: {cat} • Amount: {ru(amount)}
+                              {ocrDiff && <span style={{marginLeft:8, color:"#b25"}}>edited (OCR was {ru(e.total)})</span>}
+                            </div>
+                            <div style={{fontSize:12, color:"#666"}}>
+                              Limit: {ru(limit)} • Remaining before: {ru(remBefore)}
+                            </div>
+                          </div>
+                          <div style={{minWidth:220}}>
+                            <button onClick={() => openReceipt(e)}>Open receipt</button>
+                          </div>
                         </div>
-                        <div style={{minWidth:220}}>
-                          <button onClick={() => openReceipt(e)}>Open receipt</button>
+
+                        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:8, maxWidth:700}}>
+                          <label>Decision note (optional)
+                            <input
+                              value={notes[e.id] || ""}
+                              onChange={ev=>setNotes({...notes, [e.id]: ev.target.value})}
+                              placeholder="Explain approval/rejection (shared with employee)"
+                            />
+                          </label>
+                          <div style={{display:"flex", alignItems:"end", gap:8}}>
+                            <button onClick={() => decide(e.id, "approve")} disabled={decidingId === e.id}>
+                              {decidingId === e.id ? "Working…" : "Approve"}
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (!(notes[e.id] || "").trim()) {
+                                  alert("Please write a rejection reason.");
+                                  return;
+                                }
+                                decide(e.id, "reject");
+                              }}
+                              disabled={decidingId === e.id}
+                            >{decidingId === e.id ? "Working…" : "Reject"}</button>
+                          </div>
                         </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            );
-          })())
-        }
-      </section>
+                      </li>
+                    );
+                  })}
+                </ul>
+            )}
+          </section>
+
+          <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginTop:18}}>
+            <h2 style={{marginTop:0}}>All expenses</h2>
+
+            <div style={{display:"flex", gap:8, flexWrap:"wrap", marginBottom:10}}>
+              <label>Status&nbsp;
+                <select value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}>
+                  <option value="ALL">All</option>
+                  <option value="PENDING_REVIEW">Pending</option>
+                  <option value="AUTO_APPROVED">Auto-approved</option>
+                  <option value="APPROVED">Approved</option>
+                  <option value="REJECTED">Rejected</option>
+                </select>
+              </label>
+              <input
+                placeholder="Search: task title, assignee, merchant"
+                value={search}
+                onChange={e=>setSearch(e.target.value)}
+                style={{flex:"1 1 300px"}}
+              />
+            </div>
+
+            {loadingAll ? <p>Loading…</p> :
+              ((() => {
+                const list = filtered;
+                if (list.length === 0) return <p>No expenses match the filter.</p>;
+                return (
+                  <ul style={{listStyle:"none", padding:0, margin:0}}>
+                    {list.map(e => {
+                      const t = tasksById[e.taskId] || {};
+                      const amount = Number(e.editedTotal ?? e.total ?? 0) || 0;
+                      const ocrDiff = (e.editedTotal != null) && (Number(e.editedTotal) !== Number(e.total));
+                      const cat = e.category || "Other";
+                      return (
+                        <li key={e.id} style={{padding:"10px 0", borderBottom:"1px solid #f3f3f3"}}>
+                          <div style={{display:"flex", justifyContent:"space-between", gap:12, flexWrap:"wrap"}}>
+                            <div>
+                              <div style={{display:"flex", gap:8, alignItems:"center"}}>
+                                <strong>{t.title || e.taskId}</strong>
+                                <StatusTag s={e.approval?.status}/>
+                              </div>
+                              <div style={{fontSize:12, color:"#666"}}>
+                                {new Date(e.createdAt).toLocaleString()} • Assignee: {t.assignee || "—"} • Category: {cat} • Amount: {ru(amount)}
+                                {ocrDiff && <span style={{marginLeft:8, color:"#b25"}}>edited (OCR was {ru(e.total)})</span>}
+                              </div>
+                              {e.approval?.note && e.approval?.status === "REJECTED" && (
+                                <div style={{marginTop:6, fontSize:12, color:"#b22"}}>
+                                  Admin rejection note: {e.approval.note}
+                                </div>
+                              )}
+                            </div>
+                            <div style={{minWidth:220}}>
+                              <button onClick={() => openReceipt(e)}>Open receipt</button>
+                            </div>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                );
+              })())
+            }
+          </section>
+        </>
+      )}
+
+      {/* REPORTS tab (extra, since global bar already has CSV) */}
+      {tab==="reports" && (
+        <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
+          <h2 style={{marginTop:0}}>Reports</h2>
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr auto", gap:8, alignItems:"end", maxWidth:600}}>
+            <label>From (date)
+              <input type="date" value={reportFrom} onChange={e=>setReportFrom(e.target.value)} />
+            </label>
+            <label>To (date)
+              <input type="date" value={reportTo} onChange={e=>setReportTo(e.target.value)} />
+            </label>
+            <button onClick={downloadReport}>Download CSV</button>
+          </div>
+          <div style={{fontSize:12, color:"#666", marginTop:6}}>
+            Leave fields blank for an all-time report. “To” is inclusive (CSV logic matches).
+          </div>
+        </section>
+      )}
 
       {/* Edit Modal */}
       {editOpen && (
@@ -1139,7 +1076,6 @@ export default function Admin() {
               <div/>
             </div>
 
-            {/* Budgets */}
             <div style={{marginTop:10}}>
               <strong>Budgets</strong>
               <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, marginTop:6}}>
@@ -1157,7 +1093,6 @@ export default function Admin() {
               </div>
             </div>
 
-            {/* Products */}
             <div style={{marginTop:14}}>
               <strong>Products</strong>
               <div style={{marginTop:6}}>
@@ -1227,7 +1162,7 @@ export default function Admin() {
   );
 }
 
-/* ---------- small UI helpers ---------- */
+/* ---------- Small UI helpers ---------- */
 function KPI({title, value}) {
   return (
     <div style={{border:"1px solid #eee", borderRadius:8, padding:"10px 12px"}}>
@@ -1242,6 +1177,59 @@ function formatINR(n) {
   if (v >= 1e5) return "₹" + (v/1e5).toFixed(1) + "L";
   if (v >= 1e3) return "₹" + (v/1e3).toFixed(1) + "k";
   return "₹" + v.toFixed(0);
+}
+
+/* ---------- Products Admin component ---------- */
+function ProductAdmin({ products, reload, tenantId }) {
+  const [savingProduct, setSavingProduct] = useState(false);
+  const [newProduct, setNewProduct] = useState({ name:"", sku:"" });
+
+  return (
+    <>
+      <form onSubmit={async (ev) => {
+        ev.preventDefault();
+        const name = (newProduct.name||"").trim();
+        const sku  = (newProduct.sku||"").trim();
+        if (!name) { alert("Enter a product name"); return; }
+        setSavingProduct(true);
+        try {
+          const body = { tenantId, name, sku: sku || undefined };
+          const r = await fetch(`/api/products`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+          const j = await r.json();
+          if (!r.ok) return alert(j.error || "Could not create product");
+          setNewProduct({ name:"", sku:"" });
+          await reload();
+          alert("Product created");
+        } catch (e) {
+          alert(e.message || "Could not create product");
+        } finally {
+          setSavingProduct(false);
+        }
+      }} style={{display:"grid", gridTemplateColumns:"2fr 1fr auto", gap:8, alignItems:"end", maxWidth:700}}>
+        <label>Name
+          <input value={newProduct.name} onChange={e=>setNewProduct({...newProduct, name:e.target.value})}/>
+        </label>
+        <label>SKU (optional)
+          <input value={newProduct.sku} onChange={e=>setNewProduct({...newProduct, sku:e.target.value})}/>
+        </label>
+        <button type="submit" disabled={savingProduct}>{savingProduct ? "Saving…" : "Add product"}</button>
+      </form>
+
+      <div style={{marginTop:12}}>
+        {products.length === 0 ? (
+          <p style={{color:"#666"}}>No products yet.</p>
+        ) : (
+          <ul>
+            {products.map(p => (
+              <li key={p.id || p.productId}>
+                {p.name || p.title || (p.id || p.productId)}{p.sku ? ` — ${p.sku}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </>
+  );
 }
 
 /* ------------------ Interactive Charts ------------------ */

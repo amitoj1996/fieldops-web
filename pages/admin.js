@@ -45,7 +45,11 @@ export default function Admin() {
   // Task items (staging for create)
   const [chosenProductId, setChosenProductId] = useState("");
   const [chosenQty, setChosenQty] = useState(1);
-  const [taskItems, setTaskItems] = useState([]); // {productId, name, qty, unitPrice}
+  const [taskItems, setTaskItems] = useState([]);
+
+  // Report filters
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
   async function loadProducts() {
     const r = await fetch(`/api/products`).then(r=>r.json());
@@ -90,13 +94,19 @@ export default function Admin() {
 
   // Catalog: create product
   async function createProduct() {
-    if (!pName.trim()) return alert("Name required");
-    const body = { tenantId, name: pName.trim(), sku: pSku.trim() || undefined, unitPrice: pPrice ? Number(pPrice) : undefined, docType:"Product" };
-    const r = await fetch(`/api/products`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
-    const j = await r.json();
-    if (!r.ok) return alert(j.error || "Create product failed");
-    setPName(""); setPSku(""); setPPrice("");
-    await loadProducts();
+    try {
+      if (!pName.trim()) return alert("Name required");
+      const body = { tenantId, name: pName.trim(), sku: pSku.trim() || undefined, unitPrice: pPrice ? Number(pPrice) : undefined, docType:"Product" };
+      const r = await fetch(`/api/products`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+      let j;
+      try { j = await r.json(); } catch { j = { error: `HTTP ${r.status}` }; }
+      if (!r.ok) return alert(j.error || `Create product failed (HTTP ${r.status})`);
+      setPName(""); setPSku(""); setPPrice("");
+      await loadProducts();
+    } catch (e) {
+      console.error(e);
+      alert(`Create product failed: ${e.message || e}`);
+    }
   }
 
   // Create task with items
@@ -105,7 +115,6 @@ export default function Admin() {
     const p = products.find(x=>x.id===chosenProductId);
     if (!p) return;
     const qty = Math.max(1, Number(chosenQty || 1));
-    // merge if same product already added
     setTaskItems(items=>{
       const i = items.findIndex(it=>it.productId===p.id);
       if (i>=0) {
@@ -128,15 +137,10 @@ export default function Admin() {
 
     const body = {
       tenantId, title, assignee,
-      slaStart: slaStartISO,
-      slaEnd:   slaEndISO,
-      type: "Data collection",
-      status: "ASSIGNED",
+      slaStart: slaStartISO, slaEnd: slaEndISO,
+      type: "Data collection", status: "ASSIGNED",
       expenseLimits: limits,
-      items: taskItems.map(it => ({
-        productId: it.productId, name: it.name, sku: it.sku, qty: it.qty,
-        unitPrice: it.unitPrice
-      }))
+      items: taskItems.map(it => ({ productId: it.productId, name: it.name, sku: it.sku, qty: it.qty, unitPrice: it.unitPrice }))
     };
 
     const r = await fetch(`/api/tasks`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
@@ -185,9 +189,34 @@ export default function Admin() {
     return arr;
   }, [pending]);
 
+  function downloadCsv() {
+    const qs = new URLSearchParams();
+    qs.set("tenantId", tenantId);
+    if (fromDate) qs.set("fromDate", fromDate);
+    if (toDate) qs.set("toDate", toDate);
+    window.open(`/api/report/csv?${qs.toString()}`, "_blank");
+  }
+
   return (
     <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto"}}>
       <h1>Admin portal</h1>
+
+      {/* Report */}
+      <section style={{border:"1px solid #ddd", borderRadius:8, padding:12, marginBottom:16, background:"#f9fbff"}}>
+        <h2 style={{marginTop:0}}>Reports</h2>
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr auto", gap:8, alignItems:"end", maxWidth:600}}>
+          <label>From (created on/after)
+            <input type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)} />
+          </label>
+          <label>To (created on/before)
+            <input type="date" value={toDate} onChange={e=>setToDate(e.target.value)} />
+          </label>
+          <button onClick={downloadCsv}>Download CSV</button>
+        </div>
+        <div style={{fontSize:12, color:"#666", marginTop:6}}>
+          CSV includes: Task basics, SLA &amp; late flag, assigned products, per-category totals (excludes rejected), counts for pending/approved/rejected.
+        </div>
+      </section>
 
       {/* Pending expenses queue */}
       <section style={{border:"2px solid #f3c", borderRadius:10, padding:14, marginBottom:16, background:"#fff6ff"}}>
@@ -276,7 +305,6 @@ export default function Admin() {
           </label>
         </div>
 
-        {/* SLA rows with separate Date + Time */}
         <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:8, alignItems:"end"}}>
           <label>SLA start (date)
             <input type="date" value={slaStartDate} onChange={e=>setSlaStartDate(e.target.value)} />
@@ -292,7 +320,6 @@ export default function Admin() {
           </label>
         </div>
 
-        {/* Limits */}
         <div style={{display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, maxWidth:720, marginTop:10}}>
           {["Hotel","Food","Travel","Other"].map(k=>(
             <label key={k}>{k}
@@ -346,7 +373,6 @@ export default function Admin() {
         <button onClick={createTask} style={{marginTop:10}}>Create task</button>
       </section>
 
-      {/* Lists */}
       <section style={{display:"grid", gridTemplateColumns:"1fr 2fr", gap:16}}>
         <div>
           <h2>Tasks</h2>

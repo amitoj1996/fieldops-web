@@ -859,3 +859,69 @@ def report_csv(req: func.HttpRequest) -> func.HttpResponse:
 
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+# ---- Tasks (delete with optional cascade)
+@app.route(route="tasks/delete", methods=["POST", "DELETE"])
+def tasks_delete(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Delete a Task (admin only). Supports:
+      - POST body: { tenantId, taskId, cascade: true|false }
+      - DELETE query: ?tenantId=..&taskId=..&cascade=true
+    If cascade is true (default), also deletes TaskEvent + Expense docs for the task.
+    """
+    pr, err = _ensure_admin(req)
+    if err:
+        return err
+    try:
+        if req.method.upper() == "DELETE":
+            tenant  = req.params.get("tenantId", "default")
+            task_id = req.params.get("taskId")
+            cascade = (req.params.get("cascade", "true").lower() != "false")
+        else:
+            data    = req.get_json()
+            tenant  = data.get("tenantId", "default")
+            task_id = data.get("taskId") or data.get("id")
+            cascade = bool(data.get("cascade", True))
+
+        if not task_id:
+            return func.HttpResponse(json.dumps({"error": "taskId required"}),
+                                     mimetype="application/json", status_code=400)
+
+        task = _get_task(tenant, task_id)
+        if not task:
+            return func.HttpResponse(json.dumps({"error": "task not found"}),
+                                     mimetype="application/json", status_code=404)
+
+        result = {"ok": True, "tenantId": tenant, "taskId": task_id, "events": 0, "expenses": 0, "cascade": cascade}
+
+        if cascade:
+            # Delete TaskEvent docs
+            try:
+                evc = _events_container()
+                qev = "SELECT c.id FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t AND c.taskId=@task"
+                for ev in evc.query_items(qev, parameters=[{"name":"@t","value":tenant},{"name":"@task","value":task_id}],
+                                          enable_cross_partition_query=True):
+                    evc.delete_item(item=ev["id"], partition_key=tenant)
+                    result["events"] += 1
+            except Exception:
+                pass  # don't fail delete if cleanup has issues
+
+            # Delete Expense docs
+            try:
+                exc = _expenses_container()
+                qex = "SELECT c.id FROM c WHERE c.docType='Expense' AND c.tenantId=@t AND c.taskId=@task"
+                for ex in exc.query_items(qex, parameters=[{"name":"@t","value":tenant},{"name":"@task","value":task_id}],
+                                          enable_cross_partition_query=True):
+                    exc.delete_item(item=ex["id"], partition_key=tenant)
+                    result["expenses"] += 1
+            except Exception:
+                pass
+
+        # Delete the Task itself
+        _tasks_container().delete_item(item=task_id, partition_key=tenant)
+
+        return func.HttpResponse(json.dumps(result), mimetype="application/json", status_code=200)
+
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}),
+                                 mimetype="application/json", status_code=500)

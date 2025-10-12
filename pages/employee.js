@@ -21,10 +21,11 @@ export default function Employee() {
   const [lastFileName, setLastFileName] = useState(""); // sanitized filename
   const [expenseId, setExpenseId] = useState(null);     // keep the same expense across edits
   const [category, setCategory] = useState("Food");
-  const [editedTotal, setEditedTotal] = useState("");
+  const [editedTotal, setEditedTotal] = useState("");   // keep as string; "" means "not provided"
   const [lateReason, setLateReason] = useState("");
   const [ocr, setOcr] = useState(null);
   const [approval, setApproval] = useState(null);
+  const [currentExpense, setCurrentExpense] = useState(null); // <- show latest doc after finalize
   const [loading, setLoading] = useState(false);
   const [expenses, setExpenses] = useState([]);
 
@@ -60,10 +61,11 @@ export default function Employee() {
       const safe = sanitizeName(f.name);
       setLastFileName(safe);
       setExpenseId(null);   // new file -> new expense (until OCR upsert returns id)
-      setOcr(null); setApproval(null);
+      setOcr(null); setApproval(null); setCurrentExpense(null); setEditedTotal("");
     } else {
       setLastFileName("");
       setExpenseId(null);
+      setCurrentExpense(null);
     }
   }
 
@@ -96,6 +98,11 @@ export default function Employee() {
     if (j.idempotent) alert("Already checked out.");
   }
 
+  function totalOrUndefined() {
+    // send a number only if the user actually typed something; this keeps OCR total when left blank
+    return editedTotal !== "" ? Number(editedTotal) : undefined;
+  }
+
   async function handleSubmit(e) {
     e.preventDefault();
     if (!taskId) return alert("Pick a Task");
@@ -108,13 +115,15 @@ export default function Employee() {
           method:"POST", headers:{"Content-Type":"application/json"},
           body: JSON.stringify({
             tenantId, expenseId, category,
-            total: editedTotal ? Number(editedTotal) : undefined,
+            total: totalOrUndefined(),
             submittedBy: employeeId, comment: "Edited total"
           })
         });
         const fin = await finRes.json();
         if (!finRes.ok) throw new Error(fin.error || "Finalize error");
         setApproval(fin.approval);
+        setCurrentExpense(fin);          // show latest fields (editedTotal, approval, etc.)
+        await loadTaskExpenses();        // <- refresh the list so you see the change
         return;
       }
 
@@ -147,13 +156,15 @@ export default function Employee() {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           tenantId, expenseId: exp.id, category,
-          total: editedTotal ? Number(editedTotal) : exp.total,
+          total: totalOrUndefined() ?? exp.total,
           submittedBy: employeeId, comment: "Submitted from employee portal"
         })
       });
       const fin = await finRes.json();
       if (!finRes.ok) throw new Error(fin.error||"Finalize error");
       setApproval(fin.approval);
+      setCurrentExpense(fin);
+      await loadTaskExpenses();
 
     } catch (err) {
       alert(err.message);
@@ -163,7 +174,7 @@ export default function Employee() {
   }
 
   async function loadTaskExpenses() {
-    if (!taskId) return alert("Pick a Task");
+    if (!taskId) return;
     const j = await fetch(`/api/expenses/byTask?taskId=${encodeURIComponent(taskId)}&tenantId=${tenantId}`).then(r=>r.json());
     setExpenses(Array.isArray(j)?j:[]);
   }
@@ -211,7 +222,7 @@ export default function Employee() {
           <label style={{flex:1}}>Receipt file
             <input type="file" onChange={e=>onFileChange(e.target.files?.[0]||null)} accept=".jpg,.jpeg,.png,.pdf"/>
           </label>
-          <button type="button" onClick={()=>{ setFile(null); setLastFileName(""); setExpenseId(null); setOcr(null); setApproval(null); }} disabled={!file && !expenseId}>
+          <button type="button" onClick={()=>{ setFile(null); setLastFileName(""); setExpenseId(null); setOcr(null); setApproval(null); setCurrentExpense(null); setEditedTotal(""); }} disabled={!file && !expenseId}>
             Reset file
           </button>
         </div>
@@ -229,12 +240,21 @@ export default function Employee() {
         {expenseId && <div style={{fontSize:12, color:"#555"}}>Editing existing expense: <code>{expenseId}</code></div>}
       </form>
 
+      {/* Show the most recent expense doc returned from finalize */}
+      {currentExpense && <div style={{border:"1px solid #ddd", padding:"1rem", borderRadius:8, marginBottom:"1rem"}}>
+        <strong>Current expense</strong>
+        <div style={{marginTop:6}}>Category: {currentExpense.category || "—"}</div>
+        <div>OCR total: {currentExpense.total ?? "—"}</div>
+        <div>Edited total: {currentExpense.editedTotal ?? "—"}</div>
+        <div>Approval: {currentExpense.approval?.status} {currentExpense.approval ? `• limit ₹${currentExpense.approval.limit}` : ""}</div>
+      </div>}
+
       {ocr && <div style={{border:"1px solid #ddd", padding:"1rem", borderRadius:8, marginBottom:"1rem"}}>
-        <strong>OCR:</strong>
+        <strong>OCR (raw)</strong>
         <pre style={{whiteSpace:"pre-wrap"}}>{JSON.stringify(ocr, null, 2)}</pre>
       </div>}
       {approval && <div style={{border:"1px solid #ddd", padding:"1rem", borderRadius:8, marginBottom:"1rem"}}>
-        <strong>Approval:</strong>
+        <strong>Approval</strong>
         <pre style={{whiteSpace:"pre-wrap"}}>{JSON.stringify(approval, null, 2)}</pre>
       </div>}
 

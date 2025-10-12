@@ -675,7 +675,7 @@ export default function Admin() {
                 <li key={p.id || p.productId}>{p.name || p.title || (p.id || p.productId)}{p.sku ? ` — ${p.sku}` : ""}</li>
               ))}
             </ul>
-          ))}
+          )}
         </div>
       </section>
 

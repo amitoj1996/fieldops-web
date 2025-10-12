@@ -4,7 +4,7 @@ export default function Home() {
       <h1>FieldOps</h1>
       <p>Welcome! Please sign in to use the app.</p>
       <p>
-        <a href="/.auth/login/github?post_login_redirect_uri=/employee">Login with GitHub</a>
+        <a href="/.auth/login/aad?post_login_redirect_uri=/employee">Login</a>
       </p>
       <p style={{color:"#555"}}>
         Admins go to <a href="/admin">/admin</a> (requires the <code>admin</code> role).

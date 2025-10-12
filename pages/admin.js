@@ -48,16 +48,15 @@ export default function Admin() {
     return m;
   }, [tasks]);
 
-  // Products (for assigning to tasks)
+  // Products (shared: for create & edit task)
   const [products, setProducts] = useState([]);
-  useEffect(() => {
-    (async () => {
-      try {
-        const j = await fetch(`/api/products?tenantId=${tenantId}`).then(r=>r.json());
-        if (Array.isArray(j)) setProducts(j);
-      } catch {}
-    })();
-  }, [tenantId]);
+  async function loadProducts() {
+    try {
+      const j = await fetch(`/api/products?tenantId=${tenantId}`).then(r=>r.json());
+      if (Array.isArray(j)) setProducts(j);
+    } catch {}
+  }
+  useEffect(() => { loadProducts(); }, [tenantId]);
 
   // Pending review
   const [pending, setPending] = useState([]);
@@ -71,7 +70,7 @@ export default function Admin() {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [search, setSearch] = useState("");
 
-  // Create task (SLA split into Date + Time)
+  // Create task (SLA split + products restored)
   const [newTask, setNewTask] = useState({
     title: "",
     type: "data_collection",
@@ -81,10 +80,23 @@ export default function Admin() {
     slaEndDate: "",
     slaEndTime: "",
     expenseLimits: { Hotel:1000, Food:1000, Travel:1000, Other:1000 },
-    items: []
+    items: [] // [{productId, quantity}]
   });
+  function createAddItem() {
+    setNewTask(prev => ({ ...prev, items: [...(prev.items||[]), {productId:"", quantity:1}] }));
+  }
+  function createUpdateItem(idx, patch) {
+    setNewTask(prev => {
+      const arr = (prev.items||[]).slice();
+      arr[idx] = { ...arr[idx], ...patch };
+      return { ...prev, items: arr };
+    });
+  }
+  function createRemoveItem(idx) {
+    setNewTask(prev => ({ ...prev, items: (prev.items||[]).filter((_,i)=>i!==idx) }));
+  }
 
-  // Edit modal state
+  // Edit modal state (includes products)
   const [editOpen, setEditOpen] = useState(false);
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState({
@@ -99,6 +111,10 @@ export default function Admin() {
     items: [] // [{productId, quantity}]
   });
   const [savingEdit, setSavingEdit] = useState(false);
+
+  // Product create (admin section)
+  const [newProduct, setNewProduct] = useState({ name:"", sku:"" });
+  const [savingProduct, setSavingProduct] = useState(false);
 
   // Load tasks + expenses
   useEffect(() => {
@@ -166,8 +182,15 @@ export default function Admin() {
       assignee: newTask.assignee,
       slaStart: combineISO(newTask.slaStartDate, newTask.slaStartTime) || undefined,
       slaEnd:   combineISO(newTask.slaEndDate,   newTask.slaEndTime)   || undefined,
-      expenseLimits: newTask.expenseLimits,
-      items: newTask.items
+      expenseLimits: {
+        Hotel: Number(newTask.expenseLimits.Hotel||0),
+        Food:  Number(newTask.expenseLimits.Food||0),
+        Travel:Number(newTask.expenseLimits.Travel||0),
+        Other: Number(newTask.expenseLimits.Other||0)
+      },
+      items: (newTask.items||[])
+        .filter(x => (x.productId||"").trim().length>0)
+        .map(x => ({ productId: x.productId, quantity: Number(x.quantity||1) }))
     };
     const r = await fetch(`/api/tasks`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
     const j = await r.json();
@@ -175,13 +198,8 @@ export default function Admin() {
     const t = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
     setTasks(Array.isArray(t)? t : []);
     setNewTask({
-      title: "",
-      type: "data_collection",
-      assignee: "",
-      slaStartDate: "",
-      slaStartTime: "",
-      slaEndDate: "",
-      slaEndTime: "",
+      title: "", type: "data_collection", assignee: "",
+      slaStartDate: "", slaStartTime: "", slaEndDate: "", slaEndTime: "",
       expenseLimits: { Hotel:1000, Food:1000, Travel:1000, Other:1000 },
       items: []
     });
@@ -223,21 +241,20 @@ export default function Admin() {
     setEditOpen(true);
   }
   function closeEdit() {
-    setEditOpen(false);
-    setEditId(null);
+    setEditOpen(false); setEditId(null);
   }
-  function updateItem(idx, patch) {
+  function updateEditItem(idx, patch) {
     setEditForm(prev => {
       const arr = prev.items.slice();
       arr[idx] = { ...arr[idx], ...patch };
       return { ...prev, items: arr };
     });
   }
-  function addItemRow() {
-    setEditForm(prev => ({ ...prev, items: [...(prev.items || []), { productId: "", quantity: 1 }] }));
+  function addEditItem() {
+    setEditForm(prev => ({ ...prev, items: [...(prev.items||[]), {productId:"", quantity:1}] }));
   }
-  function removeItemRow(idx) {
-    setEditForm(prev => ({ ...prev, items: (prev.items || []).filter((_,i)=>i!==idx) }));
+  function removeEditItem(idx) {
+    setEditForm(prev => ({ ...prev, items: (prev.items||[]).filter((_,i)=>i!==idx) }));
   }
 
   async function saveEdit() {
@@ -272,7 +289,6 @@ export default function Admin() {
         alert(j?.error || "Update failed (is PUT /api/tasks implemented?)");
         return;
       }
-      // reload tasks
       const t = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
       setTasks(Array.isArray(t)? t : []);
       closeEdit();
@@ -282,17 +298,6 @@ export default function Admin() {
     } finally {
       setSavingEdit(false);
     }
-  }
-
-  function StatusTag({s}) {
-    const map = {
-      PENDING_REVIEW: {bg:"#fff4e5", color:"#8a5b00", label:"Pending"},
-      AUTO_APPROVED:  {bg:"#e8fff2", color:"#0b6d3d", label:"Auto-approved"},
-      APPROVED:       {bg:"#e8f4ff", color:"#0b4d8a", label:"Approved"},
-      REJECTED:       {bg:"#ffe8e8", color:"#8a0b0b", label:"Rejected"}
-    };
-    const m = map[s] || {bg:"#eee", color:"#444", label:String(s||"—")};
-    return <span style={{fontSize:12, padding:"2px 6px", borderRadius:6, background:m.bg, color:m.color}}>{m.label}</span>;
   }
 
   // Filters for All expenses
@@ -315,12 +320,58 @@ export default function Admin() {
     return list;
   }, [expenses, statusFilter, search, tasksById]);
 
+  // Create a product
+  async function saveProduct(ev) {
+    ev.preventDefault();
+    if (!newProduct.name.trim()) {
+      alert("Enter a product name");
+      return;
+    }
+    setSavingProduct(true);
+    try {
+      const body = { tenantId, name: newProduct.name.trim(), sku: newProduct.sku.trim() || undefined };
+      const r = await fetch(`/api/products`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+      const j = await r.json();
+      if (!r.ok) return alert(j.error || "Could not create product");
+      setNewProduct({ name:"", sku:"" });
+      await loadProducts(); // refresh dropdowns
+      alert("Product created");
+    } catch (e) {
+      alert(e.message || "Could not create product");
+    } finally {
+      setSavingProduct(false);
+    }
+  }
+
   return (
     <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto"}}>
       <h1>Admin</h1>
       <div style={{marginBottom:12, color:"#444"}}>Signed in as: <strong>{me?.userDetails || "—"}</strong></div>
 
-      {/* Quick create task */}
+      {/* Quick create product (restored) */}
+      <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
+        <h2 style={{marginTop:0}}>Products</h2>
+        <form onSubmit={saveProduct} style={{display:"grid", gridTemplateColumns:"2fr 1fr auto", gap:8, alignItems:"end", maxWidth:700}}>
+          <label>Name
+            <input value={newProduct.name} onChange={e=>setNewProduct({...newProduct, name:e.target.value})}/>
+          </label>
+          <label>SKU (optional)
+            <input value={newProduct.sku} onChange={e=>setNewProduct({...newProduct, sku:e.target.value})}/>
+          </label>
+          <button type="submit" disabled={savingProduct}>{savingProduct ? "Saving…" : "Add product"}</button>
+        </form>
+        <div style={{marginTop:12}}>
+          {products.length === 0 ? <p style={{color:"#666"}}>No products yet.</p> : (
+            <ul>
+              {products.map(p => (
+                <li key={p.id || p.productId}>{p.name || p.title || (p.id || p.productId)}{p.sku ? ` — ${p.sku}` : ""}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      {/* Quick create task (restored products picker) */}
       <section style={{border:"1px solid #eee", borderRadius:8, padding:12, marginBottom:18}}>
         <h2 style={{marginTop:0}}>Create task</h2>
         <form onSubmit={createTask} style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8}}>
@@ -364,6 +415,34 @@ export default function Admin() {
               </label>
             ))}
           </div>
+
+          {/* Products rows */}
+          <div style={{gridColumn:"1 / -1", marginTop:6}}>
+            <strong>Products for this task</strong>
+            <div style={{marginTop:6}}>
+              {(newTask.items||[]).map((row, idx) => (
+                <div key={idx} style={{display:"grid", gridTemplateColumns:"3fr 1fr auto", gap:8, alignItems:"end", marginBottom:8, maxWidth:700}}>
+                  <label>Product
+                    <select value={row.productId} onChange={e=>createUpdateItem(idx, {productId: e.target.value})}>
+                      <option value="">— Select —</option>
+                      {products.map(p => (
+                        <option key={p.id || p.productId} value={p.id || p.productId}>
+                          {p.name || p.title || (p.id || p.productId)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>Qty
+                    <input type="number" min="1" step="1" value={row.quantity}
+                           onChange={e=>createUpdateItem(idx, {quantity: Number(e.target.value || 1)})}/>
+                  </label>
+                  <button type="button" onClick={()=>createRemoveItem(idx)}>Remove</button>
+                </div>
+              ))}
+              <button type="button" onClick={createAddItem}>Add product</button>
+            </div>
+          </div>
+
           <div style={{gridColumn:"1 / -1", marginTop:8}}>
             <button type="submit">Create</button>
           </div>
@@ -500,60 +579,47 @@ export default function Admin() {
 
         {loadingAll ? <p>Loading…</p> :
           ((() => {
-            const list = expenses;
+            const list = filtered;
             if (list.length === 0) return <p>No expenses match the filter.</p>;
             return (
               <ul style={{listStyle:"none", padding:0, margin:0}}>
-                {list
-                  .filter(e => statusFilter==="ALL" ? true : (e.approval?.status || "")===statusFilter)
-                  .filter(e => {
-                    if (!search.trim()) return true;
-                    const q = search.toLowerCase();
-                    const t = tasksById[e.taskId] || {};
-                    return (
-                      (t.title || "").toLowerCase().includes(q) ||
-                      (t.assignee || "").toLowerCase().includes(q) ||
-                      (e.merchant || "").toLowerCase().includes(q)
-                    );
-                  })
-                  .sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0))
-                  .map(e => {
-                    const t = tasksById[e.taskId] || {};
-                    const amount = Number(e.editedTotal ?? e.total ?? 0) || 0;
-                    const ocrDiff = (e.editedTotal != null) && (Number(e.editedTotal) !== Number(e.total));
-                    const cat = e.category || "Other";
-                    return (
-                      <li key={e.id} style={{padding:"10px 0", borderBottom:"1px solid #f3f3f3"}}>
-                        <div style={{display:"flex", justifyContent:"space-between", gap:12, flexWrap:"wrap"}}>
-                          <div>
-                            <div style={{display:"flex", gap:8, alignItems:"center"}}>
-                              <strong>{t.title || e.taskId}</strong>
-                              <StatusTag s={e.approval?.status}/>
-                            </div>
-                            <div style={{fontSize:12, color:"#666"}}>
-                              {new Date(e.createdAt).toLocaleString()} • Assignee: {t.assignee || "—"} • Category: {cat} • Amount: {ru(amount)}
-                              {ocrDiff && <span style={{marginLeft:8, color:"#b25"}}>edited (OCR was {ru(e.total)})</span>}
-                            </div>
-                            {e.approval?.note && e.approval?.status === "REJECTED" && (
-                              <div style={{marginTop:6, fontSize:12, color:"#b22"}}>
-                                Admin rejection note: {e.approval.note}
-                              </div>
-                            )}
+                {list.map(e => {
+                  const t = tasksById[e.taskId] || {};
+                  const amount = Number(e.editedTotal ?? e.total ?? 0) || 0;
+                  const ocrDiff = (e.editedTotal != null) && (Number(e.editedTotal) !== Number(e.total));
+                  const cat = e.category || "Other";
+                  return (
+                    <li key={e.id} style={{padding:"10px 0", borderBottom:"1px solid #f3f3f3"}}>
+                      <div style={{display:"flex", justifyContent:"space-between", gap:12, flexWrap:"wrap"}}>
+                        <div>
+                          <div style={{display:"flex", gap:8, alignItems:"center"}}>
+                            <strong>{t.title || e.taskId}</strong>
+                            <StatusTag s={e.approval?.status}/>
                           </div>
-                          <div style={{minWidth:220}}>
-                            <button onClick={() => openReceipt(e)}>Open receipt</button>
+                          <div style={{fontSize:12, color:"#666"}}>
+                            {new Date(e.createdAt).toLocaleString()} • Assignee: {t.assignee || "—"} • Category: {cat} • Amount: {ru(amount)}
+                            {ocrDiff && <span style={{marginLeft:8, color:"#b25"}}>edited (OCR was {ru(e.total)})</span>}
                           </div>
+                          {e.approval?.note && e.approval?.status === "REJECTED" && (
+                            <div style={{marginTop:6, fontSize:12, color:"#b22"}}>
+                              Admin rejection note: {e.approval.note}
+                            </div>
+                          )}
                         </div>
-                      </li>
-                    );
-                  })}
+                        <div style={{minWidth:220}}>
+                          <button onClick={() => openReceipt(e)}>Open receipt</button>
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             );
           })())
         }
       </section>
 
-      {/* Edit Modal */}
+      {/* Edit Modal (includes products) */}
       {editOpen && (
         <div style={{
           position:"fixed", inset:0, background:"rgba(0,0,0,0.35)",
@@ -619,7 +685,7 @@ export default function Admin() {
                 {(editForm.items || []).map((row, idx) => (
                   <div key={idx} style={{display:"grid", gridTemplateColumns:"3fr 1fr auto", gap:8, alignItems:"end", marginBottom:8}}>
                     <label>Product
-                      <select value={row.productId} onChange={e=>updateItem(idx, {productId: e.target.value})}>
+                      <select value={row.productId} onChange={e=>updateEditItem(idx, {productId: e.target.value})}>
                         <option value="">— Select —</option>
                         {products.map(p => (
                           <option key={p.id || p.productId} value={p.id || p.productId}>
@@ -630,12 +696,12 @@ export default function Admin() {
                     </label>
                     <label>Qty
                       <input type="number" min="1" step="1" value={row.quantity}
-                             onChange={e=>updateItem(idx, {quantity: Number(e.target.value || 1)})}/>
+                             onChange={e=>updateEditItem(idx, {quantity: Number(e.target.value || 1)})}/>
                     </label>
-                    <button onClick={()=>removeItemRow(idx)}>Remove</button>
+                    <button onClick={()=>removeEditItem(idx)}>Remove</button>
                   </div>
                 ))}
-                <button onClick={addItemRow}>Add product</button>
+                <button onClick={addEditItem}>Add product</button>
               </div>
             </div>
 
@@ -653,4 +719,15 @@ export default function Admin() {
       </section>
     </main>
   );
+}
+
+function StatusTag({s}) {
+  const map = {
+    PENDING_REVIEW: {bg:"#fff4e5", color:"#8a5b00", label:"Pending"},
+    AUTO_APPROVED:  {bg:"#e8fff2", color:"#0b6d3d", label:"Auto-approved"},
+    APPROVED:       {bg:"#e8f4ff", color:"#0b4d8a", label:"Approved"},
+    REJECTED:       {bg:"#ffe8e8", color:"#8a0b0b", label:"Rejected"}
+  };
+  const m = map[s] || {bg:"#eee", color:"#444", label:String(s||"—")};
+  return <span style={{fontSize:12, padding:"2px 6px", borderRadius:6, background:m.bg, color:m.color}}>{m.label}</span>;
 }

@@ -1,5 +1,8 @@
 {
-  "navigationFallback": { "rewrite": "/index.html", "exclude": ["/api/*", "/.auth/*"] },
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/api/*", "/.auth/*"]
+  },
   "routes": [
     { "route": "/", "allowedRoles": ["anonymous", "authenticated"] },
 
@@ -14,7 +17,6 @@
     { "route": "/api/tasks/limits", "allowedRoles": ["admin"] },
     { "route": "/api/tasks", "methods": ["POST"], "allowedRoles": ["admin"] },
 
-    # TEMP: open update endpoint for testing
     { "route": "/api/tasks/update", "methods": ["POST","PUT"], "allowedRoles": ["anonymous"] },
 
     { "route": "/api/*", "methods": ["OPTIONS"], "allowedRoles": ["anonymous"] },

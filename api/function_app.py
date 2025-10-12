@@ -5,7 +5,9 @@ import azure.functions as func
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
-# ---------- Cosmos helpers ----------
+# ---------------------------
+# Cosmos helpers
+# ---------------------------
 def _get_container_named(container_name: str):
     from azure.cosmos import CosmosClient, PartitionKey
     endpoint = os.environ.get("COSMOS_ENDPOINT")
@@ -31,7 +33,8 @@ def _expenses_container():
     return _get_container_named(os.environ.get("EXPENSES_CONTAINER", "Expenses"))
 
 def _events_container():
-    return _get_container_named(os.environ.get("EVENTS_CONTAINER", "TaskEvents"))
+    # Use same Tasks container by default to avoid RU spikes.
+    return _get_container_named(os.environ.get("EVENTS_CONTAINER", "Tasks"))
 
 DEFAULT_LIMITS = {"Hotel": 1000, "Food": 1000, "Travel": 1000, "Other": 1000}
 
@@ -52,18 +55,16 @@ def _now_iso():
 
 def _parse_iso(s):
     if not s: return None
-    # allow 2025-10-11T12:34:00Z and with offset
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
         return None
 
-# ---------- Blob helpers ----------
-from azure.storage.blob import (
-    BlobServiceClient,
-    generate_blob_sas,
-    BlobSasPermissions,
-)
+# ---------------------------
+# Blob helpers (receipts)
+# ---------------------------
+from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
+
 SAFE_NAME = re.compile(r"[^a-zA-Z0-9._/-]+")
 
 def _sanitize_blob_name(name: str) -> str:
@@ -92,12 +93,14 @@ def _make_blob_urls(task_id: str, filename: str, *, for_read=False, for_write=Fa
     blob_url = f"https://{account}.blob.core.windows.net/{container}/{blob_name}"
     return blob_url, f"{blob_url}?{sas}"
 
-# ---------- Routes ----------
+# ---------------------------
+# Routes
+# ---------------------------
 @app.route(route="hello", methods=["GET"])
 def hello(req: func.HttpRequest) -> func.HttpResponse:
     return func.HttpResponse("Hello from Python Functions, world!", status_code=200)
 
-# ---- Tasks (create/list + limits) ----
+# ---- Tasks (create/list + limits)
 @app.route(route="tasks", methods=["POST"])
 def create_task(req: func.HttpRequest) -> func.HttpResponse:
     try:
@@ -151,21 +154,29 @@ def update_task_limits(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
-# ---- Check-in / Check-out / Timeline ----
+# ---- Check-in / Check-out / Timeline (idempotent)
 @app.route(route="tasks/checkin", methods=["POST"])
 def tasks_checkin(req: func.HttpRequest) -> func.HttpResponse:
     try:
         data = req.get_json()
         tenant = data.get("tenantId","default")
         task_id = data.get("taskId")
-        lat = data.get("lat")
-        lng = data.get("lng")
+        lat = data.get("lat"); lng = data.get("lng")
+        actor = data.get("actor") or data.get("employeeId")
         if not task_id:
             return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
         task = _get_task(tenant, task_id)
         if not task:
             return func.HttpResponse(json.dumps({"error":"task not found"}), mimetype="application/json", status_code=404)
+
         evc = _events_container()
+        # Return existing check-in if present (idempotent)
+        q = ("SELECT TOP 1 * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t "
+             "AND c.taskId=@task AND c.eventType='CHECK_IN' ORDER BY c.ts ASC")
+        existing = list(evc.query_items(q, parameters=[{"name":"@t","value":tenant},{"name":"@task","value":task_id}], enable_cross_partition_query=True))
+        if existing:
+            return func.HttpResponse(json.dumps({"event": existing[0], "idempotent": True}), mimetype="application/json", status_code=200)
+
         ev = {
             "id": str(uuid.uuid4()),
             "docType":"TaskEvent",
@@ -175,11 +186,12 @@ def tasks_checkin(req: func.HttpRequest) -> func.HttpResponse:
             "ts": _now_iso(),
             "lat": lat, "lng": lng
         }
+        if actor: ev["actor"] = actor
         evc.create_item(ev)
         task["status"] = "IN_PROGRESS"
         task["checkInAt"] = ev["ts"]
         _save_task(task)
-        return func.HttpResponse(json.dumps(ev), mimetype="application/json", status_code=201)
+        return func.HttpResponse(json.dumps({"event": ev, "idempotent": False}), mimetype="application/json", status_code=201)
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
@@ -191,11 +203,28 @@ def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
         task_id = data.get("taskId")
         reason = data.get("reason")
         lat = data.get("lat"); lng = data.get("lng")
+        actor = data.get("actor") or data.get("employeeId")
         if not task_id:
             return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
         task = _get_task(tenant, task_id)
         if not task:
             return func.HttpResponse(json.dumps({"error":"task not found"}), mimetype="application/json", status_code=404)
+
+        evc = _events_container()
+        # If checkout exists, return it (idempotent)
+        q_out = ("SELECT TOP 1 * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t "
+                 "AND c.taskId=@task AND c.eventType='CHECK_OUT' ORDER BY c.ts ASC")
+        existing_out = list(evc.query_items(q_out, parameters=[{"name":"@t","value":tenant},{"name":"@task","value":task_id}], enable_cross_partition_query=True))
+        if existing_out:
+            return func.HttpResponse(json.dumps({"event": existing_out[0], "idempotent": True, "task": task}),
+                                     mimetype="application/json", status_code=200)
+
+        # Require prior check-in
+        q_in = ("SELECT TOP 1 * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t "
+                "AND c.taskId=@task AND c.eventType='CHECK_IN' ORDER BY c.ts ASC")
+        existing_in = list(evc.query_items(q_in, parameters=[{"name":"@t","value":tenant},{"name":"@task","value":task_id}], enable_cross_partition_query=True))
+        if not existing_in:
+            return func.HttpResponse(json.dumps({"error":"must check in before checking out"}), mimetype="application/json", status_code=400)
 
         now = datetime.now(timezone.utc)
         sla_end = _parse_iso(task.get("slaEnd"))
@@ -203,7 +232,6 @@ def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
         if late and not reason:
             return func.HttpResponse(json.dumps({"error":"reason required because task is beyond SLA"}), mimetype="application/json", status_code=400)
 
-        evc = _events_container()
         ev = {
             "id": str(uuid.uuid4()),
             "docType":"TaskEvent",
@@ -215,6 +243,7 @@ def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
             "late": late,
             "reason": reason
         }
+        if actor: ev["actor"] = actor
         evc.create_item(ev)
 
         task["status"] = "COMPLETED"
@@ -223,7 +252,7 @@ def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
         if reason: task["lateReason"] = reason
         _save_task(task)
 
-        return func.HttpResponse(json.dumps({"event": ev, "task": task}),
+        return func.HttpResponse(json.dumps({"event": ev, "idempotent": False, "task": task}),
                                  mimetype="application/json", status_code=201)
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
@@ -236,13 +265,14 @@ def tasks_events(req: func.HttpRequest) -> func.HttpResponse:
         if not task_id:
             return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
         c = _events_container()
-        q = "SELECT * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t AND c.taskId=@task ORDER BY c.ts ASC"
+        q = ("SELECT * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t "
+             "AND c.taskId=@task ORDER BY c.ts ASC")
         items = list(c.query_items(q, parameters=[{"name":"@t","value":tenant},{"name":"@task","value":task_id}], enable_cross_partition_query=True))
         return func.HttpResponse(json.dumps(items), mimetype="application/json", status_code=200)
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
-# ---- Receipts: SAS + readSas + list ----
+# ---- Receipts: SAS + readSas + list
 @app.route(route="receipts/sas", methods=["GET"])
 def receipts_sas(req: func.HttpRequest) -> func.HttpResponse:
     try:
@@ -289,7 +319,7 @@ def receipts_list(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
-# ---- OCR + Expenses (existing endpoints kept) ----
+# ---- OCR + Expenses
 @app.route(route="receipts/ocr", methods=["POST"])
 def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
     try:

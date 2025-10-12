@@ -1,5 +1,6 @@
 import json, os
 from datetime import datetime, timezone
+
 import azure.functions as func
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 
@@ -9,27 +10,40 @@ COSMOS_DB   = os.environ.get("COSMOS_DB", "fieldops")
 TASKS_CONT  = os.environ.get("COSMOS_CONTAINER_TASKS", "tasks")
 
 def _json(body, status=200):
-    return func.HttpResponse(json.dumps(body, ensure_ascii=False, default=str),
-                             status_code=status, headers={"Content-Type":"application/json"})
+    return func.HttpResponse(
+        json.dumps(body, ensure_ascii=False, default=str),
+        status_code=status,
+        headers={"Content-Type": "application/json"}
+    )
 
-def _bad(msg, code=400): return _json({"error": msg}, code)
-def _now(): return datetime.now(timezone.utc).isoformat()
+def _bad(msg, code=400):
+    return _json({"error": msg}, code)
 
-def _c():
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
+def _container():
     if not COSMOS_URL or not COSMOS_KEY:
-        raise RuntimeError("Cosmos config missing")
+        raise RuntimeError("Cosmos config missing: set COSMOS_URL and COSMOS_KEY")
     client = CosmosClient(COSMOS_URL, credential=COSMOS_KEY)
     db = client.create_database_if_not_exists(COSMOS_DB)
     try:
-        return db.create_container_if_not_exists(id=TASKS_CONT, partition_key=PartitionKey(path="/tenantId"), offer_throughput=400)
+        return db.create_container_if_not_exists(
+            id=TASKS_CONT,
+            partition_key=PartitionKey(path="/tenantId"),
+            offer_throughput=400
+        )
     except Exception:
         return db.get_container_client(TASKS_CONT)
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    if req.method.upper() == "OPTIONS":
+    method = req.method.upper()
+
+    # CORS preflight
+    if method == "OPTIONS":
         return func.HttpResponse(status_code=200)
 
-    if req.method.upper() != "POST":
+    if method != "POST":
         return _bad("Use POST", 405)
 
     try:
@@ -43,19 +57,19 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return _bad("tenantId and taskId are required")
 
     try:
-        cont = _c()
+        cont = _container()
         task = cont.read_item(item=taskId, partition_key=tenantId)
     except exceptions.CosmosResourceNotFoundError:
         return _bad("Task not found", 404)
     except Exception as e:
         return _bad(f"Cosmos error: {e}", 500)
 
-    # Allowed fields
+    # Allowed updates
     if "title" in data:    task["title"] = (data["title"] or "").strip()
     if "type" in data:     task["type"] = (data["type"] or "").strip()
     if "assignee" in data: task["assignee"] = (data["assignee"] or "").strip().lower()
     if "slaStart" in data: task["slaStart"] = data["slaStart"] or None
-    if "slaEnd"   in data: task["slaEnd"]   = data["slaEnd"] or None
+    if "slaEnd"   in data: task["slaEnd"]   = data["slaEnd"]   or None
 
     if isinstance(data.get("expenseLimits"), dict):
         el = data["expenseLimits"]
@@ -70,12 +84,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         norm = []
         for it in data["items"]:
             pid = (it.get("productId") or it.get("product") or "").strip()
-            if not pid: continue
+            if not pid:
+                continue
             try:
                 qty = int(it.get("quantity") or 1)
             except Exception:
                 qty = 1
-            if qty < 1: qty = 1
+            if qty < 1:
+                qty = 1
             norm.append({"productId": pid, "quantity": qty})
         task["items"] = norm
 

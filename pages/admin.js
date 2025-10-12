@@ -40,7 +40,7 @@ export default function Admin() {
   const me = useAuth();
   const [tenantId] = useState("default");
 
-  // --- Reports (shared date filters for dashboard/charts/EotM) ---
+  // --- Reports (shared date filters for dashboard/charts/EoM) ---
   const [reportFrom, setReportFrom] = useState("");
   const [reportTo, setReportTo] = useState("");
   function downloadReport() {
@@ -78,7 +78,6 @@ export default function Admin() {
   useEffect(() => { loadProducts(); }, [tenantId]);
 
   // Pending review
-  theadjust();
   const [pending, setPending] = useState([]);
   const [loadingPending, setLoadingPending] = useState(true);
   const [decidingId, setDecidingId] = useState(null);
@@ -284,13 +283,13 @@ export default function Admin() {
   }, [tasksInRange, expensesInRange, tasksById]);
 
   // ---- Employee of the Month (EoM) ----
-  // Scoring (simple & transparent):
+  // Scoring:
   // +10 per completed task
   // +10 per on-time completion (COMPLETED without slaBreached)
-  // Budget bonus/penalty capped to ±20: +20 * (1 - spend/budget) if spend <= budget, else -20 * ((spend - budget)/max(budget,1))
+  // Budget bonus/penalty capped to ±20 based on spend vs sum of budgets for that employee’s tasks in range
   const eom = useMemo(() => {
     const byAssignee = {};
-    // prepare budgets per assignee (sum budgets from their tasks)
+    // budgets per assignee (sum budgets from their tasks)
     for (const t of tasksInRange) {
       const a = (t.assignee || "—").toLowerCase();
       const limits = t.expenseLimits || {};
@@ -303,7 +302,7 @@ export default function Admin() {
         if (!t.slaBreached) s.onTime += 1; else s.breaches += 1;
       }
     }
-    // add spend per assignee (non-rejected)
+    // spend per assignee (non-rejected)
     for (const e of expensesInRange) {
       const st = (e.approval?.status) || "";
       if (st === "REJECTED") continue;
@@ -326,7 +325,6 @@ export default function Admin() {
           budgetBonus = -Math.min(20, 20 * overPct);
         }
       } else {
-        // No budget set, penalize positive spend slightly
         if (s.spend > 0) budgetBonus = -10;
       }
       const score = Math.round(base + ontime + budgetBonus);

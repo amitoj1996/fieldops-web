@@ -9,13 +9,11 @@ export default function Employee() {
   const [tenantId] = useState("default");
   const [employeeId] = useState("emp-001");
 
-  // Tasks and selection
   const [tasks, setTasks] = useState([]);
   const [taskQuery, setTaskQuery] = useState("");
   const [taskId, setTaskId] = useState("");
   const selectedTask = useMemo(()=> tasks.find(t=>t.id===taskId) || null, [tasks, taskId]);
 
-  // Timeline
   const [events, setEvents] = useState([]);
 
   // Expense flow
@@ -31,7 +29,6 @@ export default function Employee() {
   const [loading, setLoading] = useState(false);
   const [expenses, setExpenses] = useState([]);
 
-  // Load tasks
   useEffect(() => {
     (async () => {
       const j = await fetch(`/api/tasks?tenantId=${tenantId}`).then(r=>r.json());
@@ -39,7 +36,6 @@ export default function Employee() {
     })();
   }, []);
 
-  // Load timeline + expenses on selection
   useEffect(() => { taskId ? loadEvents() : setEvents([]); loadTaskExpenses(); }, [taskId]);
 
   async function loadEvents() {
@@ -109,7 +105,7 @@ export default function Employee() {
     try {
       setLoading(true); setApproval(null);
 
-      // Update existing expense (no new upload/OCR)
+      // Update existing expense
       if (expenseId) {
         const finRes = await fetch(`/api/expenses/finalize`, {
           method:"POST", headers:{"Content-Type":"application/json"},
@@ -241,24 +237,33 @@ export default function Employee() {
         </div>
       </section>
 
-      {/* ---------- Remaining-only budget panel ---------- */}
+      {/* ---------- Assigned products ---------- */}
       {selectedTask && (
         <section style={{border:"1px solid #ddd", borderRadius:8, padding:12, marginBottom:16, background:"#fafafa"}}>
-          <h2 style={{margin:"0 0 8px"}}>Remaining budget</h2>
-          <div style={{marginBottom:10}}>
-            Overall remaining: <strong style={{color: remaining.overallRemaining < 0 ? "#c62828" : "#2e7d32"}}>
-              {ru(remaining.overallRemaining)}
-            </strong>
-          </div>
-          <div style={{display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:10}}>
-            {remaining.per.map(row => (
-              <div key={row.cat} style={{border:"1px solid #eee", borderRadius:8, padding:"10px 12px"}}>
-                <div style={{display:"flex", justifyContent:"space-between"}}>
-                  <span><strong>{row.cat}</strong></span>
-                  <span style={{color: row.remaining < 0 ? "#c62828" : "#2e7d32"}}>{ru(row.remaining)}</span>
+          <h2 style={{margin:"0 0 8px"}}>Assigned products</h2>
+          {Array.isArray(selectedTask.items) && selectedTask.items.length>0 ? (
+            <ul>
+              {selectedTask.items.map(it=>(
+                <li key={it.productId}>
+                  <strong>{it.name}</strong> {it.sku ? `• ${it.sku}` : ""} — Qty: {it.qty}
+                </li>
+              ))}
+            </ul>
+          ) : <p>None for this task.</p>}
+
+          {/* Remaining budget (overall + per category) */}
+          <div style={{marginTop:12}}>
+            <div style={{marginBottom:6}}>Overall remaining: <strong style={{color: remaining.overallRemaining < 0 ? "#c62828" : "#2e7d32"}}>{ru(remaining.overallRemaining)}</strong></div>
+            <div style={{display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:10}}>
+              {remaining.per.map(row => (
+                <div key={row.cat} style={{border:"1px solid #eee", borderRadius:8, padding:"10px 12px"}}>
+                  <div style={{display:"flex", justifyContent:"space-between"}}>
+                    <span><strong>{row.cat}</strong></span>
+                    <span style={{color: row.remaining < 0 ? "#c62828" : "#2e7d32"}}>{ru(row.remaining)}</span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </section>
       )}

@@ -33,8 +33,11 @@ def _expenses_container():
     return _get_container_named(os.environ.get("EXPENSES_CONTAINER", "Expenses"))
 
 def _events_container():
-    # Use Tasks container by default to avoid RU spikes from a new container
     return _get_container_named(os.environ.get("EVENTS_CONTAINER", "Tasks"))
+
+def _catalog_container():
+    # reuse same container as Tasks to save RU; separate by docType='Product'
+    return _get_container_named(os.environ.get("CATALOG_CONTAINER", "Tasks"))
 
 DEFAULT_LIMITS = {"Hotel": 1000, "Food": 1000, "Travel": 1000, "Other": 1000}
 
@@ -100,54 +103,48 @@ def _make_blob_urls(task_id: str, filename: str, *, for_read=False, for_write=Fa
 def hello(req: func.HttpRequest) -> func.HttpResponse:
     return func.HttpResponse("Hello from Python Functions, world!", status_code=200)
 
-# ---- Products (catalog) ----
+# ---- Products (catalog)
 @app.route(route="products", methods=["GET"])
 def products_list(req: func.HttpRequest) -> func.HttpResponse:
     try:
-        tenant = req.params.get("tenantId","default")
-        c = _tasks_container()
-        q = "SELECT * FROM c WHERE c.docType='Product' AND c.tenantId=@t ORDER BY c.createdAt DESC"
-        items = list(c.query_items(q, parameters=[{"name":"@t","value":tenant}], enable_cross_partition_query=True))
+        tenant = req.params.get("tenantId", "default")
+        c = _catalog_container()
+        q = "SELECT * FROM c WHERE c.tenantId=@t AND c.docType='Product' ORDER BY c.name"
+        items = list(c.query_items(q, parameters=[{"name":"@t","value": tenant}], enable_cross_partition_query=True))
         return func.HttpResponse(json.dumps(items), mimetype="application/json", status_code=200)
     except Exception as e:
-        return func.HttpResponse(json.dumps({"error":str(e)}), mimetype="application/json", status_code=500)
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
 @app.route(route="products", methods=["POST"])
 def products_create(req: func.HttpRequest) -> func.HttpResponse:
     try:
         data = req.get_json()
-        tenant = data.get("tenantId","default")
         name = (data.get("name") or "").strip()
         if not name:
-            return func.HttpResponse(json.dumps({"error":"name required"}), mimetype="application/json", status_code=400)
-        sku = (data.get("sku") or "").strip()
-        unit = (data.get("unit") or "unit").strip()
-        price = data.get("price", None)
-
-        c = _tasks_container()
+            return func.HttpResponse(json.dumps({"error":"name is required"}), mimetype="application/json", status_code=400)
+        c = _catalog_container()
         item = {
             "id": data.get("id") or str(uuid.uuid4()),
+            "tenantId": data.get("tenantId","default"),
             "docType": "Product",
-            "tenantId": tenant,
             "name": name,
-            "sku": sku or None,
-            "unit": unit or "unit",
-            "price": float(price) if price not in (None,"") else None,
+            "sku": (data.get("sku") or "").strip() or None,
+            "unitPrice": data.get("unitPrice"),
             "createdAt": _now_iso()
         }
         c.create_item(item)
         return func.HttpResponse(json.dumps(item), mimetype="application/json", status_code=201)
     except Exception as e:
-        return func.HttpResponse(json.dumps({"error":str(e)}), mimetype="application/json", status_code=500)
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
-# ---- Tasks (create/list + limits + items)
+# ---- Tasks (create/list + limits)
 @app.route(route="tasks", methods=["POST"])
 def create_task(req: func.HttpRequest) -> func.HttpResponse:
     try:
         data = req.get_json()
         c = _tasks_container()
         limits = data.get("expenseLimits") or DEFAULT_LIMITS.copy()
-        items = data.get("items") or []  # [{productId,name,sku,qty,unit,price}]
+        items  = data.get("items") or []  # <-- persist products on task
         item = {
             "id": data.get("id") or str(uuid.uuid4()),
             "tenantId": data.get("tenantId", "default"),
@@ -196,39 +193,6 @@ def update_task_limits(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
-@app.route(route="tasks/items", methods=["PUT"])
-def update_task_items(req: func.HttpRequest) -> func.HttpResponse:
-    """Replace the task's items array with the provided list."""
-    try:
-        data = req.get_json()
-        task_id = data.get("taskId")
-        tenant  = data.get("tenantId","default")
-        items   = data.get("items")
-        if not task_id or not isinstance(items, list):
-            return func.HttpResponse(json.dumps({"error":"taskId and items[] required"}),
-                                     mimetype="application/json", status_code=400)
-        c = _tasks_container()
-        task = c.read_item(item=task_id, partition_key=tenant)
-        task["items"] = items
-        _save_task(task)
-        return func.HttpResponse(json.dumps(task), mimetype="application/json", status_code=200)
-    except Exception as e:
-        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
-
-@app.route(route="tasks/items", methods=["GET"])
-def get_task_items(req: func.HttpRequest) -> func.HttpResponse:
-    try:
-        tenant = req.params.get("tenantId","default")
-        task_id = req.params.get("taskId")
-        if not task_id:
-            return func.HttpResponse(json.dumps({"error":"taskId required"}), mimetype="application/json", status_code=400)
-        task = _get_task(tenant, task_id)
-        if not task:
-            return func.HttpResponse(json.dumps({"error":"task not found"}), mimetype="application/json", status_code=404)
-        return func.HttpResponse(json.dumps(task.get("items") or []), mimetype="application/json", status_code=200)
-    except Exception as e:
-        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
-
 # ---- Check-in / Check-out / Timeline (idempotent)
 @app.route(route="tasks/checkin", methods=["POST"])
 def tasks_checkin(req: func.HttpRequest) -> func.HttpResponse:
@@ -245,26 +209,17 @@ def tasks_checkin(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(json.dumps({"error":"task not found"}), mimetype="application/json", status_code=404)
 
         evc = _events_container()
-        # Return existing check-in if present (idempotent)
         q = ("SELECT TOP 1 * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t "
              "AND c.taskId=@task AND c.eventType='CHECK_IN' ORDER BY c.ts ASC")
         existing = list(evc.query_items(q, parameters=[{"name":"@t","value":tenant},{"name":"@task","value":task_id}], enable_cross_partition_query=True))
         if existing:
             return func.HttpResponse(json.dumps({"event": existing[0], "idempotent": True}), mimetype="application/json", status_code=200)
 
-        ev = {
-            "id": str(uuid.uuid4()),
-            "docType":"TaskEvent",
-            "tenantId": tenant,
-            "taskId": task_id,
-            "eventType":"CHECK_IN",
-            "ts": _now_iso(),
-            "lat": lat, "lng": lng
-        }
+        ev = {"id": str(uuid.uuid4()), "docType":"TaskEvent", "tenantId": tenant, "taskId": task_id,
+              "eventType":"CHECK_IN", "ts": _now_iso(), "lat": lat, "lng": lng}
         if actor: ev["actor"] = actor
         evc.create_item(ev)
-        task["status"] = "IN_PROGRESS"
-        task["checkInAt"] = ev["ts"]
+        task["status"] = "IN_PROGRESS"; task["checkInAt"] = ev["ts"]
         _save_task(task)
         return func.HttpResponse(json.dumps({"event": ev, "idempotent": False}), mimetype="application/json", status_code=201)
     except Exception as e:
@@ -286,7 +241,6 @@ def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(json.dumps({"error":"task not found"}), mimetype="application/json", status_code=404)
 
         evc = _events_container()
-        # If checkout exists, return it (idempotent)
         q_out = ("SELECT TOP 1 * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t "
                  "AND c.taskId=@task AND c.eventType='CHECK_OUT' ORDER BY c.ts ASC")
         existing_out = list(evc.query_items(q_out, parameters=[{"name":"@t","value":tenant},{"name":"@task","value":task_id}], enable_cross_partition_query=True))
@@ -294,7 +248,6 @@ def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(json.dumps({"event": existing_out[0], "idempotent": True, "task": task}),
                                      mimetype="application/json", status_code=200)
 
-        # Require prior check-in
         q_in = ("SELECT TOP 1 * FROM c WHERE c.docType='TaskEvent' AND c.tenantId=@t "
                 "AND c.taskId=@task AND c.eventType='CHECK_IN' ORDER BY c.ts ASC")
         existing_in = list(evc.query_items(q_in, parameters=[{"name":"@t","value":tenant},{"name":"@task","value":task_id}], enable_cross_partition_query=True))
@@ -307,23 +260,12 @@ def tasks_checkout(req: func.HttpRequest) -> func.HttpResponse:
         if late and not reason:
             return func.HttpResponse(json.dumps({"error":"reason required because task is beyond SLA"}), mimetype="application/json", status_code=400)
 
-        ev = {
-            "id": str(uuid.uuid4()),
-            "docType":"TaskEvent",
-            "tenantId": tenant,
-            "taskId": task_id,
-            "eventType":"CHECK_OUT",
-            "ts": _now_iso(),
-            "lat": lat, "lng": lng,
-            "late": late,
-            "reason": reason
-        }
+        ev = {"id": str(uuid.uuid4()), "docType":"TaskEvent", "tenantId": tenant, "taskId": task_id,
+              "eventType":"CHECK_OUT", "ts": _now_iso(), "lat": lat, "lng": lng, "late": late, "reason": reason}
         if actor: ev["actor"] = actor
         evc.create_item(ev)
 
-        task["status"] = "COMPLETED"
-        task["checkOutAt"] = ev["ts"]
-        task["slaBreached"] = late
+        task["status"] = "COMPLETED"; task["checkOutAt"] = ev["ts"]; task["slaBreached"] = late
         if reason: task["lateReason"] = reason
         _save_task(task)
 
@@ -369,7 +311,7 @@ def receipts_read_sas(req: func.HttpRequest) -> func.HttpResponse:
         filename = req.params.get("filename")
         minutes  = int(req.params.get("minutes", "5"))
         if not task_id or not filename:
-            return func.HttpResponse(json.dumps({"error":"taskId and filename are required"]),
+            return func.HttpResponse(json.dumps({"error":"taskId and filename are required"}),
                                      mimetype="application/json", status_code=400)
         blob_url, read_url = _make_blob_urls(task_id, filename, for_read=True, minutes=minutes)
         return func.HttpResponse(json.dumps({"blobUrl": blob_url, "readUrl": read_url}),
@@ -394,14 +336,9 @@ def receipts_list(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
-# ---- OCR + Expenses (OCR is **upsert**/idempotent)
+# ---- OCR + Expenses (upsert)
 @app.route(route="receipts/ocr", methods=["POST"])
 def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    Idempotent upsert by (tenantId, taskId, blobPath).
-    If an Expense already exists for this receipt, update OCR fields and return it (idempotent=True).
-    Otherwise create a new Expense (idempotent=False).
-    """
     try:
         data = req.get_json()
         task_id  = data.get("taskId")
@@ -412,10 +349,8 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(json.dumps({"error":"taskId and filename are required"}),
                                      mimetype="application/json", status_code=400)
 
-        # 1) short-lived READ SAS for DI
         blob_url, read_url = _make_blob_urls(task_id, filename, for_read=True, minutes=10)
 
-        # 2) Call Document Intelligence
         import requests
         endpoint = os.environ["DI_ENDPOINT"].rstrip("/")
         key      = os.environ["DI_KEY"]
@@ -442,7 +377,6 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
                 if result.get("status") in ("succeeded", "failed", "cancelled"):
                     break
 
-        # 3) Extract fields
         doc = {}
         try:
             docs = result.get("analyzeResult", {}).get("documents", [])
@@ -456,7 +390,7 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
                 return x.get("content")
             merchant = _val(f.get("MerchantName", {}))
             total    = _val(f.get("Total", {}))
-            date     = _val(f.get("TransactionDate", {}))
+            date     = __val(f.get("TransactionDate", {}))
             currency = None
             vc = f.get("Total", {}).get("valueCurrency") if isinstance(f.get("Total", {}), dict) else None
             if isinstance(vc, dict):
@@ -467,7 +401,6 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
 
         out = {"taskId": task_id, "tenantId": tenant, "blobPath": blob_url, "ocr": doc}
 
-        # 4) Upsert the Expense
         if save:
             c = _expenses_container()
             q = ("SELECT TOP 1 * FROM c WHERE c.docType='Expense' AND c.tenantId=@t "
@@ -480,7 +413,6 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
 
             if items:
                 exp = items[0]
-                # Update OCR-derived fields but preserve editedTotal/approval/category
                 exp["merchant"] = doc.get("merchant", exp.get("merchant"))
                 exp["total"]    = doc.get("total",    exp.get("total"))
                 exp["currency"] = doc.get("currency", exp.get("currency"))
@@ -518,7 +450,7 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps({"error": str(e)}),
                                  mimetype="application/json", status_code=500)
 
-# ---- Finalize with REMAINING budget logic
+# ---- Finalize with remaining-budget logic
 @app.route(route="expenses/finalize", methods=["POST"])
 def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
     try:
@@ -558,7 +490,6 @@ def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
 
       current_amount = float(edited_total or 0)
 
-      # Update fields
       expense["category"] = category
       if submitted_total_present and original_total is not None:
           try:
@@ -568,12 +499,10 @@ def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
       if data.get("comment"): expense["comment"] = data["comment"]
       if data.get("submittedBy"): expense["submittedBy"] = data["submittedBy"]
 
-      # ----- LIMIT & REMAINING BUDGET CHECK -----
       task = _get_task(expense.get("tenantId","default"), expense.get("taskId"))
       limits = (task or {}).get("expenseLimits") or DEFAULT_LIMITS
       limit_for_cat = float(limits.get(category, limits.get("Other", 1000)) or 0)
 
-      # Sum other non-rejected expenses in SAME task & category (exclude this expense id)
       q = ("SELECT c.id, c.editedTotal, c.total, c.approval "
            "FROM c WHERE c.docType='Expense' AND c.tenantId=@t AND c.taskId=@task AND c.category=@cat")
       others = list(c.query_items(q, parameters=[
@@ -605,7 +534,6 @@ def expenses_finalize(req: func.HttpRequest) -> func.HttpResponse:
           status = "PENDING_REVIEW"
           reason = f"exceeds remaining (amount {current_amount} > remaining {round(remaining,2)})"
 
-      # Overwrite approval each finalize (clears old rejection notes if any)
       expense["approval"] = {
           "status": status,
           "evaluatedAt": _now_iso(),
@@ -666,9 +594,9 @@ def _decide_expense(expense_id: str, tenant: str, status: str, note: str, decide
     appr["decidedAt"] = _now_iso()
     appr["decidedBy"] = decided_by or "admin"
     if status == "REJECTED":
-        appr["note"] = note  # feedback for employee
+        appr["note"] = note
     elif note:
-        appr["note"] = note  # optional note on approve
+        appr["note"] = note
     exp["approval"] = appr
     c.replace_item(item=exp, body=exp)
     return exp

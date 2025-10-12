@@ -37,7 +37,8 @@ function Nav() {
         </>
       ) : (
         <>
-          <a href="/.auth/login/github?post_login_redirect_uri=/employee" style={{textDecoration:"none"}}>Login with GitHub</a>
+          {/* Entra External ID (customers) via SWA provider 'aad' */}
+          <a href="/.auth/login/aad?post_login_redirect_uri=/employee" style={{textDecoration:"none"}}>Login</a>
         </>
       )}
     </nav>

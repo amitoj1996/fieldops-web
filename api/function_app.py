@@ -33,7 +33,7 @@ def _expenses_container():
     return _get_container_named(os.environ.get("EXPENSES_CONTAINER", "Expenses"))
 
 def _events_container():
-    # Use same Tasks container by default to avoid RU spikes.
+    # Use Tasks container by default to avoid RU spikes from a new container
     return _get_container_named(os.environ.get("EVENTS_CONTAINER", "Tasks"))
 
 DEFAULT_LIMITS = {"Hotel": 1000, "Food": 1000, "Travel": 1000, "Other": 1000}
@@ -319,9 +319,14 @@ def receipts_list(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
 
-# ---- OCR + Expenses
+# ---- OCR + Expenses (OCR is **upsert**/idempotent)
 @app.route(route="receipts/ocr", methods=["POST"])
 def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Idempotent upsert by (tenantId, taskId, blobPath).
+    If an Expense already exists for this receipt, update OCR fields and return it (idempotent=True).
+    Otherwise create a new Expense (idempotent=False).
+    """
     try:
         data = req.get_json()
         task_id  = data.get("taskId")
@@ -332,8 +337,10 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(json.dumps({"error":"taskId and filename are required"}),
                                      mimetype="application/json", status_code=400)
 
+        # 1) short-lived READ SAS for DI
         blob_url, read_url = _make_blob_urls(task_id, filename, for_read=True, minutes=10)
 
+        # 2) Call Document Intelligence
         import requests
         endpoint = os.environ["DI_ENDPOINT"].rstrip("/")
         key      = os.environ["DI_KEY"]
@@ -360,6 +367,7 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
                 if result.get("status") in ("succeeded", "failed", "cancelled"):
                     break
 
+        # 3) Extract fields
         doc = {}
         try:
             docs = result.get("analyzeResult", {}).get("documents", [])
@@ -384,26 +392,50 @@ def receipts_ocr(req: func.HttpRequest) -> func.HttpResponse:
 
         out = {"taskId": task_id, "tenantId": tenant, "blobPath": blob_url, "ocr": doc}
 
+        # 4) Upsert the Expense
         if save:
-            exp = {
-                "id": str(uuid.uuid4()),
-                "docType": "Expense",
-                "tenantId": tenant,
-                "taskId": task_id,
-                "blobPath": blob_url,
-                "merchant": doc.get("merchant"),
-                "total": doc.get("total"),
-                "currency": doc.get("currency"),
-                "txnDate": doc.get("date"),
-                "category": None,
-                "ocrModel": model_id,
-                "ocrApiVersion": api_ver,
-                "createdAt": _now_iso(),
-                "isManualOverride": False,
-                "approval": None
-            }
-            _expenses_container().create_item(exp)
-            out["saved"] = exp
+            c = _expenses_container()
+            q = ("SELECT TOP 1 * FROM c WHERE c.docType='Expense' AND c.tenantId=@t "
+                 "AND c.taskId=@task AND c.blobPath=@blob")
+            items = list(c.query_items(q, parameters=[
+                {"name":"@t","value":tenant},
+                {"name":"@task","value":task_id},
+                {"name":"@blob","value":blob_url}
+            ], enable_cross_partition_query=True))
+
+            if items:
+                exp = items[0]
+                # Update OCR-derived fields but preserve editedTotal/approval/category
+                exp["merchant"] = doc.get("merchant", exp.get("merchant"))
+                exp["total"]    = doc.get("total",    exp.get("total"))
+                exp["currency"] = doc.get("currency", exp.get("currency"))
+                exp["txnDate"]  = doc.get("date",     exp.get("txnDate"))
+                exp["ocrModel"] = "prebuilt-receipt"
+                exp["ocrApiVersion"] = api_ver
+                c.replace_item(item=exp, body=exp)
+                out["saved"] = exp
+                out["idempotent"] = True
+            else:
+                exp = {
+                    "id": str(uuid.uuid4()),
+                    "docType": "Expense",
+                    "tenantId": tenant,
+                    "taskId": task_id,
+                    "blobPath": blob_url,
+                    "merchant": doc.get("merchant"),
+                    "total": doc.get("total"),
+                    "currency": doc.get("currency"),
+                    "txnDate": doc.get("date"),
+                    "category": None,
+                    "ocrModel": "prebuilt-receipt",
+                    "ocrApiVersion": api_ver,
+                    "createdAt": _now_iso(),
+                    "isManualOverride": False,
+                    "approval": None
+                }
+                c.create_item(exp)
+                out["saved"] = exp
+                out["idempotent"] = False
 
         return func.HttpResponse(json.dumps(out), mimetype="application/json", status_code=200)
 

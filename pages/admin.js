@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { InteractiveGroupedBars as FixedGroupedBars } from "../components/Charts";
 
 /* ---------- auth + small utils ---------- */
 function useAuth() {
@@ -785,7 +786,7 @@ export default function Admin() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
             <div>
               <h3 style={{ margin: "8px 0" }}>Spend vs Budget (by category)</h3>
-              <InteractiveGroupedBars
+              <FixedGroupedBars
                 categories={["Hotel", "Food", "Travel", "Other"]}
                 series={[
                   { name: "Budget", values: ["Hotel", "Food", "Travel", "Other"].map((k) => Number(kpis.budget[k] || 0)) },

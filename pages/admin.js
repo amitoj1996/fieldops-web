@@ -2104,6 +2104,47 @@ function EditModal({ editForm, setEditForm, closeEdit, saveEdit, products, savin
   );
 }
 
+function ToggleSwitch({ checked, onChange, id }) {
+  function toggle(){ onChange(!checked); }
+  function onKey(e){
+    if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggle(); }
+  }
+  return (
+    <button
+      type="button"
+      id={id}
+      role="switch"
+      aria-checked={checked}
+      onClick={toggle}
+      onKeyDown={onKey}
+      style={{
+        width: 44,
+        height: 24,
+        borderRadius: 999,
+        border: "1px solid #d0d7de",
+        background: checked ? "#d1fae5" : "#f3f4f6",
+        display: "inline-flex",
+        alignItems: "center",
+        padding: 2,
+        cursor: "pointer",
+        position: "relative"
+      }}
+    >
+      <span
+        style={{
+          width: 19,
+          height: 19,
+          borderRadius: "50%",
+          background: "#fff",
+          boxShadow: "0 1px 3px rgba(0,0,0,.2)",
+          transform: `translateX(${checked ? 20 : 0}px)`,
+          transition: "transform 160ms ease"
+        }}
+      />
+    </button>
+  );
+}
+
 function DeleteModal({ deleteTarget, cascadeDelete, setCascadeDelete, closeDelete, confirmDelete, deleting }) {
   return (
     <div
@@ -2127,10 +2168,18 @@ function DeleteModal({ deleteTarget, cascadeDelete, setCascadeDelete, closeDelet
         <p>
           Are you sure you want to delete <strong>{deleteTarget?.title || deleteTarget?.id}</strong>?
         </p>
-        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <input type="checkbox" checked={cascadeDelete} onChange={(e) => setCascadeDelete(e.target.checked)} />
-          Also delete related <em>expenses</em> and <em>check-in/out events</em> (recommended)
+
+        <label style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <ToggleSwitch
+            checked={!!cascadeDelete}
+            onChange={(v) => setCascadeDelete(v)}
+            id="cascade-toggle"
+          />
+          <span>
+            Also delete related <em>expenses</em> and <em>check-in/out events</em> (recommended)
+          </span>
         </label>
+
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
           <button onClick={closeDelete}>Cancel</button>
           <button
@@ -2145,7 +2194,6 @@ function DeleteModal({ deleteTarget, cascadeDelete, setCascadeDelete, closeDelet
     </div>
   );
 }
-
 /* ---------- NEW: Quick List Modal ---------- */
 function QuickListModal({ title, rows, onClose, onEdit, onDelete }) {
   return (

@@ -1925,49 +1925,86 @@ function useTooltip() {
   return { ref, tip, onMove, onLeave };
 }
 
-function InteractiveGroupedBars({ categories, series, height = 240, width = 560, padding = 28 }) {
+/* ---------- helpers for charts ---------- */
+function _estimateTextW(str) {
+  return String(str ?? "").length * 7; // ~7px per char at 10–11px font
+}
+
+/* ---------- Grouped bars (Spend vs Budget) ---------- */
+function InteractiveGroupedBars({
+  categories,
+  series,
+  height = 260,
+  width = 640,
+  tickCount = 4
+}) {
   const [visible, setVisible] = useState(series.map(() => true));
-  const activeSeries = series.map((s, i) => (visible[i] ? s : { ...s, values: s.values.map(() => 0) }));
-  const max = Math.max(1, ...activeSeries.flatMap((s) => s.values));
+  const active = series.map((s, i) => (visible[i] ? s : { ...s, values: s.values.map(() => 0) }));
+  const max = Math.max(1, ...active.flatMap((s) => s.values));
+
+  // dynamic margins so labels don't get clipped
+  const yLabelSample = formatINR(max);
+  const leftPad  = Math.max(38, 10 + _estimateTextW(yLabelSample));
+  const rightPad = 20;
+  const topPad   = 24;
+  const botPad   = 30;
+
   const barW = 18;
   const gapInner = 10;
   const groupW = series.length * barW + gapInner * (series.length - 1);
-  const gapOuter = 20;
+  const gapOuter = 24;
 
-  const totalW = Math.max(width, padding * 2 + categories.length * groupW + (categories.length - 1) * gapOuter);
-  const h = height;
-  const chartH = h - padding * 1.6;
-  const baselineY = chartH + padding * 0.2;
+  const contentW = categories.length * groupW + (categories.length - 1) * gapOuter;
+  const totalW   = Math.max(width, leftPad + contentW + rightPad);
+  const totalH   = Math.max(height, topPad + 180 + botPad);
+  const chartH   = totalH - topPad - botPad;
+  const baseY    = topPad + chartH;
+
   const { ref, tip, onMove, onLeave } = useTooltip();
 
-  const fills = ["#dbeafe", "#c7f9e3", "#fde68a", "#fbcfe8", "#e5e7eb"];
+  const fills   = ["#dbeafe", "#c7f9e3", "#fde68a", "#fbcfe8", "#e5e7eb"];
   const strokes = ["#9ac1ee", "#85dcb5", "#f1bf42", "#f28dbf", "#c7c9cc"];
 
   return (
     <div style={{ position: "relative" }} ref={ref}>
-      <svg width="100%" viewBox={`0 0 ${totalW} ${h}`} role="img" aria-label="Grouped bar chart">
-        <line x1={padding} y1={baselineY} x2={totalW - padding} y2={baselineY} stroke="#ddd" />
-        {Array.from({ length: 4 }, (_, i) => i + 1).map((i) => {
-          const y = baselineY - i * (chartH / 4);
+      <svg
+        width="100%"
+        viewBox={`0 0 ${totalW} ${totalH}`}
+        role="img"
+        aria-label="Grouped bar chart"
+        style={{ overflow: "visible" }}
+      >
+        <line x1={leftPad} y1={baseY} x2={totalW - rightPad} y2={baseY} stroke="#ddd" />
+
+        {Array.from({ length: tickCount }, (_, i) => i + 1).map((i) => {
+          const y = baseY - i * (chartH / tickCount);
+          const val = (max * i) / tickCount;
           return (
             <g key={i}>
-              <line x1={padding} x2={totalW - padding} y1={y} y2={y} stroke="#f5f5f5" />
-              <text x={padding - 6} y={y} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="#777">
-                {formatINR((max * i) / 4)}
+              <line x1={leftPad} x2={totalW - rightPad} y1={y} y2={y} stroke="#f5f5f5" />
+              <text
+                x={leftPad - 8}
+                y={y}
+                textAnchor="end"
+                dominantBaseline="middle"
+                fontSize="10"
+                fill="#777"
+              >
+                {formatINR(val)}
               </text>
             </g>
           );
         })}
 
         {categories.map((c, idx) => {
-          const gx = padding + idx * (groupW + gapOuter);
+          const gx = leftPad + idx * (groupW + gapOuter);
           return (
             <g key={c} transform={`translate(${gx},0)`}>
               {series.map((s, si) => {
-                const v = Number(activeSeries[si].values[idx] || 0);
+                const v = Number(active[si].values[idx] || 0);
                 const hgt = Math.max(0, (v / max) * (chartH - 4));
                 const x = si * (barW + gapInner);
-                const y = baselineY - hgt;
+                const y = baseY - hgt;
                 const fill = fills[si % fills.length];
                 const stroke = strokes[si % strokes.length];
                 const faded = !visible[si];
@@ -1982,26 +2019,39 @@ function InteractiveGroupedBars({ categories, series, height = 240, width = 560,
                     stroke={stroke}
                     opacity={faded ? 0.25 : 1}
                     onMouseMove={(e) =>
-                      onMove(e, `<strong>${s.name}</strong> in <em>${c}</em><br/>${ru(Number(series[si].values[idx] || 0))}`)
+                      onMove(
+                        e,
+                        `<strong>${s.name}</strong> in <em>${c}</em><br/>${ru(
+                          Number(series[si].values[idx] || 0)
+                        )}`
+                      )
                     }
                     onMouseLeave={onLeave}
                   />
                 );
               })}
-              <text x={groupW / 2} y={baselineY + 12} textAnchor="middle" fontSize="11" fill="#555">
+              <text
+                x={groupW / 2}
+                y={baseY + 14}
+                textAnchor="middle"
+                fontSize="11"
+                fill="#555"
+              >
                 {c}
               </text>
             </g>
           );
         })}
 
-        <g transform={`translate(${padding}, ${padding - 12})`}>
+        <g transform={`translate(${leftPad}, ${Math.max(12, topPad - 12)})`}>
           {series.map((s, i) => (
             <g
               key={s.name}
               transform={`translate(${i * 130},0)`}
               style={{ cursor: "pointer" }}
-              onClick={() => setVisible((v) => v.map((x, idx) => (idx === i ? !x : x)))}
+              onClick={() =>
+                setVisible((v) => v.map((x, idx) => (idx === i ? !x : x)))
+              }
             >
               <rect
                 width="12"
@@ -2017,6 +2067,7 @@ function InteractiveGroupedBars({ categories, series, height = 240, width = 560,
           ))}
         </g>
       </svg>
+
       {tip && (
         <div
           style={{
@@ -2039,25 +2090,46 @@ function InteractiveGroupedBars({ categories, series, height = 240, width = 560,
   );
 }
 
-function InteractiveHBar({ data, height = 240, width = 560, padding = 28, maxBars = 5 }) {
+function InteractiveHBar({
+  data,
+  height = 240,
+  width = 640,
+  topPad = 20,
+  botPad = 16,
+  basePadding = 28,
+  maxBars = 5
+}) {
   const rows = (data || []).slice(0, maxBars);
   const max = Math.max(1, ...rows.map((r) => r.value));
-  const rowH = Math.max(22, (height - padding * 1.6) / Math.max(1, rows.length));
-  const totalH = Math.max(height, padding * 1.6 + rows.length * rowH);
-  const chartW = width - padding * 2;
+
+  // dynamic left/right pads from text widths
+  const longestLabelLen = rows.reduce((m, r) => Math.max(m, String(r.label || "").length), 0);
+  const leftPad  = Math.max(basePadding, 10 + _estimateTextW("W".repeat(longestLabelLen)));
+  const rightPad = Math.max(22, 10 + _estimateTextW(ru(max)));
+
+  const rowH = Math.max(22, (height - topPad - botPad) / Math.max(1, rows.length));
+  const totalH = Math.max(height, topPad + rows.length * rowH + botPad);
+  const chartW = Math.max(40, width - leftPad - rightPad);
+
   const { ref, tip, onMove, onLeave } = useTooltip();
 
   return (
     <div style={{ position: "relative" }} ref={ref}>
-      <svg width="100%" viewBox={`0 0 ${width} ${totalH}`} role="img" aria-label="Horizontal bar chart">
+      <svg
+        width="100%"
+        viewBox={`0 0 ${width} ${totalH}`}
+        role="img"
+        aria-label="Horizontal bar chart"
+        style={{ overflow: "visible" }}
+      >
         {rows.map((r, i) => {
-          const y = padding + i * rowH;
+          const y = topPad + i * rowH;
           const w = Math.max(2, (r.value / max) * chartW);
           return (
             <g key={r.label}>
-              <rect x={padding} y={y + 4} width={chartW} height={rowH - 8} fill="#f6f6f6" />
+              <rect x={leftPad} y={y + 4} width={chartW} height={rowH - 8} fill="#f6f6f6" />
               <rect
-                x={padding}
+                x={leftPad}
                 y={y + 4}
                 width={w}
                 height={rowH - 8}
@@ -2066,15 +2138,22 @@ function InteractiveHBar({ data, height = 240, width = 560, padding = 28, maxBar
                 onMouseMove={(e) => onMove(e, `<strong>${r.label}</strong><br/>${ru(r.value)}`)}
                 onMouseLeave={onLeave}
               />
-              <text x={padding + 6} y={y + rowH / 2 + 1} fontSize="11" dominantBaseline="middle" fill="#333">
-                {r.label}
-              </text>
               <text
-                x={padding + chartW - 6}
+                x={leftPad - 6}
                 y={y + rowH / 2 + 1}
                 fontSize="11"
                 dominantBaseline="middle"
                 textAnchor="end"
+                fill="#333"
+              >
+                {r.label}
+              </text>
+              <text
+                x={leftPad + chartW + 6}
+                y={y + rowH / 2 + 1}
+                fontSize="11"
+                dominantBaseline="middle"
+                textAnchor="start"
                 fill="#555"
               >
                 {ru(r.value)}
@@ -2083,6 +2162,7 @@ function InteractiveHBar({ data, height = 240, width = 560, padding = 28, maxBar
           );
         })}
       </svg>
+
       {tip && (
         <div
           style={{

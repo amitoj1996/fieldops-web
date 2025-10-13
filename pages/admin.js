@@ -481,7 +481,7 @@ export default function Admin() {
       },
       items: (newTask.items || [])
         .filter((x) => (x.productId || "").trim().length > 0)
-        .map((x) => ({ productId: x.productId, qty: Number(x.qty || 1) }))
+        .map((x) => ({ productId: x.productId, quantity: Number(x.qty ?? x.quantity ?? 1) }))
     };
     const r = await fetch(`/api/tasks`, {
       method: "POST",
@@ -570,7 +570,7 @@ export default function Admin() {
         },
         items: (editForm.items || [])
           .filter((x) => (x.productId || "").trim().length > 0)
-          .map((x) => ({ productId: x.productId, qty: Number(x.qty || 1) }))
+          .map((x) => ({ productId: x.productId, quantity: Number(x.qty ?? x.quantity ?? 1) }))
       };
       const r = await fetch("/api/tasks/update", {
         method: "POST",

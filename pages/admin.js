@@ -792,7 +792,7 @@ export default function Admin() {
                   { name: "Budget", values: ["Hotel", "Food", "Travel", "Other"].map((k) => Number(kpis.budget[k] || 0)) },
                   { name: "Spend", values: ["Hotel", "Food", "Travel", "Other"].map((k) => Number(kpis.spend[k] || 0)) }
                 ]}
-                height={280}
+                height={300}
               />
             </div>
             <TopSpendersPanel

@@ -1,146 +1,217 @@
-/* -------------------------------------------------------
-   FieldOps “Polish Pack” — Modern skin for all pages
---------------------------------------------------------*/
+/* ==========================================================================
+   FieldOps – UI (light theme)
+   This file styles ONLY the main page content area (inside .fo-content),
+   keeping the shell/navigation (styles/shell.css) untouched.
+   ========================================================================== */
 
-/* ---------- Theme ---------- */
-:root{
-  --bg:#f7f9fc; --bg-weak:#eef2f7; --surface:#ffffff; --text:#0e1320;
-  --muted:#5b6473; --border:#e5eaf0; --ring:#2b7fff; --ring-soft:rgba(43,127,255,.18);
-  --shadow:0 8px 24px rgba(15,23,42,.06);
-  --radius:12px; --radius-sm:10px; --radius-lg:16px;
-  --brand:#2563eb; --brand-2:#60a5fa; --danger:#e11d48; --ok:#16a34a; --warn:#f59e0b;
-}
-@media (prefers-color-scheme: dark) {
-  :root{
-    --bg:#0b1220; --bg-weak:#0f172a; --surface:#111827; --text:#e5e7eb; --muted:#9ca3af; --border:#1f2937;
-    --ring:#60a5fa; --ring-soft:rgba(96,165,250,.22); --shadow:0 12px 28px rgba(0,0,0,.45);
-    --brand:#60a5fa; --brand-2:#93c5fd;
-  }
-}
-
-/* ---------- Base ---------- */
-*{ box-sizing:border-box }
-html,body,#__next{ height:100% }
-html{ -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale }
-body{
-  margin:0; color:var(--text);
-  background:
-    radial-gradient(1200px 600px at 20% -10%, var(--bg-weak), transparent 60%),
-    radial-gradient(1000px 600px at 110% -20%, var(--bg-weak), transparent 55%),
-    var(--bg);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-  line-height:1.35;
-}
-@media (prefers-reduced-motion:no-preference){ :root{ --ease:cubic-bezier(.2,.8,.2,1) } }
-
-main{ padding-bottom:40px }
-main h1,h2,h3{ letter-spacing:.2px }
-section{
-  background:var(--surface)!important; border:1px solid var(--border)!important;
-  border-radius:var(--radius)!important; box-shadow:var(--shadow);
+/* ---------- Base resets (scoped) ---------- */
+.fo-content, .fo-content * { box-sizing: border-box; }
+.fo-content { 
+  --text: #0b1220;
+  --muted: #64748b;
+  --line: #e5eaf0;
+  --card: #ffffff;
+  --bg-subtle: #f6f8fb;
+  --ring: rgba(96,165,250,.22);
+  --primary: #2563eb;
+  --primary-600: #1d4ed8;
+  --danger: #dc2626;
+  color-scheme: only light;  /* force light */
+  color: var(--text);
+  background: transparent;
+  font-family: -apple-system, system-ui, Segoe UI, Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
-/* Sticky bar polish (date filters + tabs) */
-main > div[style*="position: sticky"]{
-  backdrop-filter:saturate(1.2) blur(6px);
-  border:1px solid var(--border)!important;
-  box-shadow:0 6px 22px rgba(15,23,42,.06);
+/* Typography */
+.fo-content h1, .fo-content h2, .fo-content h3 { color: var(--text); margin: 0 0 .35rem; }
+.fo-content h1 { font-size: 28px; letter-spacing:.2px; }
+.fo-content h2 { font-size: 20px; }
+.fo-content h3 { font-size: 16px; }
+.fo-content p  { margin: .25rem 0 .75rem; color: var(--text); }
+.fo-content .muted, .fo-content .small { color: var(--muted); }
+.fo-content .small { font-size: 12px; }
+
+/* Links inside content */
+.fo-content a { color: var(--primary); text-decoration: none; }
+.fo-content a:hover { text-decoration: underline; }
+
+/* ---------- Sections / Cards ---------- */
+.fo-content section,
+.fo-content .card {
+  background: var(--card) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 12px !important;
+  padding: 12px;
+  box-shadow: 0 8px 24px rgba(2,6,23,.06);
 }
 
-/* Keep top Nav ABOVE sticky content (overrides inline z-index) */
-nav[style*="position:sticky"], nav[style*="position: sticky"]{
-  z-index:1200 !important;
-  background:var(--surface)!important;
-  border-bottom:1px solid var(--border)!important;
-  box-shadow:0 8px 20px rgba(15,23,42,.06);
+.fo-content .card + .card,
+.fo-content section + section { margin-top: 18px; }
+
+/* KPI boxes that were dark before */
+.fo-content .kpi,
+.fo-content [data-kpi] {
+  background: var(--card) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 10px;
 }
+
+/* ---------- Inputs / Forms ---------- */
+.fo-content label { display:inline-flex; flex-direction:column; gap:6px; font-size:12px; color:var(--muted); }
+.fo-content input,
+.fo-content select,
+.fo-content textarea {
+  appearance: none;
+  background: #fff !important;
+  color: var(--text) !important;
+  border: 1px solid #d7dde8 !important;
+  border-radius: 10px;
+  padding: 9px 10px;
+  outline: none;
+  min-height: 38px;
+  transition: box-shadow .12s ease, border-color .12s ease, background .12s ease;
+}
+.fo-content input::placeholder,
+.fo-content textarea::placeholder { color:#94a3b8 !important; }
+.fo-content input:focus,
+.fo-content select:focus,
+.fo-content textarea:focus {
+  border-color: #60a5fa !important;
+  box-shadow: 0 0 0 4px var(--ring) !important;
+}
+.fo-content input[type="number"]::-webkit-outer-spin-button,
+.fo-content input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.fo-content input[type="number"] { -moz-appearance: textfield; }
+
+/* Inline help text under controls */
+.fo-content .help { font-size:12px; color:var(--muted); margin-top:4px; }
 
 /* ---------- Buttons ---------- */
-button{
-  appearance:none; border:1px solid var(--border);
-  background:linear-gradient(180deg,#fff,#f7f8fb); color:var(--text);
-  border-radius:var(--radius-sm); padding:8px 12px; font-weight:600; letter-spacing:.2px;
-  transition:transform .08s var(--ease), box-shadow .12s var(--ease), background .12s var(--ease), border-color .12s var(--ease);
-  cursor:pointer;
+.fo-content button,
+.fo-content .btn {
+  display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  height:38px; padding:0 12px;
+  background:#ffffff; color:var(--text);
+  border:1px solid var(--line);
+  border-radius:10px; cursor:pointer;
+  transition: transform .08s ease, box-shadow .12s ease, background .12s ease, border-color .12s ease, opacity .12s ease;
 }
-button:hover{ transform:translateY(-1px); box-shadow:0 6px 16px rgba(2,6,23,.08); background:linear-gradient(180deg,#fff,#f0f3f8); border-color:#d5dbe5 }
-button:active{ transform:translateY(0); box-shadow:0 2px 8px rgba(2,6,23,.08) }
-button:disabled{ opacity:.6; cursor:not-allowed; transform:none; box-shadow:none }
-button[data-variant="primary"]{ background:linear-gradient(180deg,var(--brand),var(--brand-2)); color:#fff; border-color:transparent }
-button[data-variant="danger"]{  background:linear-gradient(180deg,var(--danger),#fb7185); color:#fff; border-color:transparent }
+.fo-content button:hover,
+.fo-content .btn:hover { background:#f2f6ff; border-color:#cfe0ff; transform: translateY(-1px); box-shadow:0 6px 16px rgba(2,6,23,.08); }
+.fo-content button:disabled,
+.fo-content .btn:disabled { opacity:.6; cursor:not-allowed; transform:none; box-shadow:none; }
 
-/* ---------- Inputs / selects ---------- */
-input,select,textarea{
-  width:100%; border:1px solid var(--border)!important; background:var(--surface);
-  border-radius:10px!important; padding:9px 10px!important; color:var(--text); outline:none;
-  transition: box-shadow .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
+.fo-content .btn.primary { background: var(--primary); color:#fff; border-color: var(--primary); }
+.fo-content .btn.primary:hover { background: var(--primary-600); border-color: var(--primary-600); }
+.fo-content .btn.danger  { background:#fff0f0; color:#8a0b0b; border-color:#f2b5b5; }
+.fo-content .btn.ghost   { background:#fff; }
+
+/* Small “chip” buttons (tabs/filters) */
+.fo-content .chip {
+  font-size:12px; height:30px; padding:0 10px; border-radius:8px;
 }
-input::placeholder,textarea::placeholder{ color:#9aa3b2 }
-input:focus,select:focus,textarea:focus{ border-color:var(--ring)!important; box-shadow:0 0 0 4px var(--ring-soft) }
-input[type="date"],input[type="time"],select{ line-height:1.1; padding:8px 10px!important }
+.fo-content .chip.active { background:#eef6ff; border-color:#c9e1ff; }
 
 /* ---------- Tables ---------- */
-table{ width:100%; border-collapse:collapse; border-spacing:0; font-size:14px }
-thead th{
-  position:sticky; top:0; z-index:1;
-  background:linear-gradient(180deg,var(--surface), color-mix(in oklab, var(--surface) 85%, #000 15%));
-  border-bottom:1px solid var(--border); padding:10px 8px!important;
-  text-transform:uppercase; letter-spacing:.4px; font-size:12px; color:var(--muted);
+.fo-content .table-wrap { overflow-x:auto; width:100%; }
+.fo-content table { border-collapse: collapse; width:100%; min-width:760px; }
+.fo-content thead th {
+  text-align:left;
+  font-weight:600;
+  font-size:12px;
+  color:#475569;
+  background:#fff !important;
+  border-bottom:1px solid var(--line);
+  padding:8px;
 }
-tbody td{ border-bottom:1px solid color-mix(in oklab, var(--border) 92%, #000 8%); padding:10px 8px!important }
-tbody tr:hover{ background:color-mix(in oklab, var(--surface) 88%, var(--bg-weak) 12%) }
+.fo-content tbody td {
+  padding:8px;
+  border-bottom:1px solid #f1f3f6;
+  color: var(--text);
+}
+.fo-content tbody tr:hover { background:#f6f9ff; }
 
-/* ---------- KPI cards (your stat tiles) ---------- */
-div[style*="padding: \"10px 12px\""][style*="border: \"1px solid #eee\""]{
-  border:1px solid var(--border)!important; border-radius:12px!important;
-  background:linear-gradient(180deg,var(--surface),color-mix(in oklab, var(--surface) 92%, #000 8%))!important;
-  box-shadow:var(--shadow);
-  transition:transform .12s var(--ease), box-shadow .12s var(--ease), background .12s var(--ease);
-}
-div[style*="padding: \"10px 12px\""][style*="border: \"1px solid #eee\""]:hover{
-  transform:translateY(-2px); box-shadow:0 10px 28px rgba(2,6,23,.10);
-}
+/* Pagination / small controls row */
+.fo-content .table-controls { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
 
 /* ---------- Status tags ---------- */
-span[style*="padding: \"2px 6px\""]{ border:1px solid rgba(0,0,0,.05); font-weight:600 }
-
-/* ---------- Modals ---------- */
-div[style*="position: fixed"][style*="inset: 0"][style*="rgba(0,0,0,0.35)"]{ backdrop-filter:blur(6px) saturate(1.1) }
-div[style*="maxHeight: \"90vh\""][style*="overflow: \"auto\""]{
-  border-radius:var(--radius-lg)!important; box-shadow:0 24px 64px rgba(2,6,23,.30); border:1px solid var(--border)!important;
+.fo-content .tag {
+  display:inline-flex; align-items:center; gap:6px;
+  font-size:12px; padding:2px 6px; border-radius:6px; border:1px solid transparent;
 }
+.fo-content .tag.pending  { background:#fff4e5; color:#8a5b00; }
+.fo-content .tag.approved { background:#e8f4ff; color:#0b4d8a; }
+.fo-content .tag.auto     { background:#e8fff2; color:#0b6d3d; }
+.fo-content .tag.rejected { background:#ffe8e8; color:#8a0b0b; }
 
-/* ---------- Tooltips ---------- */
-div[style*="position: \"absolute\""][style*=\"pointerEvents: \\\"none\\\"\"]{ border-radius:10px!important }
+/* ---------- Charts ---------- */
+/* Keep labels legible and gridlines light */
+.fo-content [role="img"] text { fill:#334155 !important; }
+.fo-content [role="img"] line { stroke:#e5e7eb !important; }
+/* Prevent SVGs tucked in cards from looking “cropped” by container padding */
+.fo-content [role="img"] { display:block; width:100%; }
 
-/* ---------- Scrollbars ---------- */
-*::-webkit-scrollbar{ height:10px; width:10px }
-*::-webkit-scrollbar-thumb{
-  background:color-mix(in oklab, var(--text) 10%, transparent);
-  border-radius:10px; border:3px solid transparent; background-clip:padding-box;
-}
-
-/* ---------- Small niceties ---------- */
-label{ font-size:12px; color:var(--muted); display:inline-block }
-label > input, label > select, label > textarea{ margin-top:6px }
-h1{ font-size:28px; margin:0 0 8px } h2{ font-size:20px; margin:0 0 10px } h3{ font-size:16px; margin:8px 0 }
-.small,.help,[style*="fontSize: 12px"][style*="color: \"#666\""]{ color:var(--muted)!important }
-
-/* ---------- Readability patch: force light cards in the main content ---------- */
-.fo-content section{
+/* ---------- Modals (your modals are inline-styled; this ensures light content) ---------- */
+.fo-content + div[style*="position: fixed"] [style*="background: '#0b1220'"],
+.fo-content + div[style*='background:"#0b1220"'] {
   background:#ffffff !important;
-  color:#0b1220 !important;
-  border:1px solid #e5eaf0 !important;
-  border-radius:12px !important;
-  box-shadow:0 8px 24px rgba(2,6,23,.06);
+  color:var(--text) !important;
+  border-color:var(--line) !important;
 }
 
-/* Tables inside cards inherit proper text color */
-.fo-content section table{ color:inherit !important }
+/* ---------- Grids / utilities ---------- */
+.fo-content .grid { display:grid; gap:12px; }
+.fo-content .grid.cols-2 { grid-template-columns: repeat(2, minmax(0,1fr)); }
+.fo-content .grid.cols-3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
+.fo-content .grid.cols-4 { grid-template-columns: repeat(4, minmax(0,1fr)); }
+@media (max-width:1000px){
+  .fo-content .grid.cols-3, .fo-content .grid.cols-4 { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width:640px){
+  .fo-content .grid.cols-2, .fo-content .grid.cols-3, .fo-content .grid.cols-4 { grid-template-columns: 1fr; }
+}
 
-/* Make "small"/helper text legible on light */
-.fo-content section .small{ color:#64748b !important }
+/* ---------- Readability hotfixes for legacy inline dark styles ---------- */
+.fo-content [style*="background: '#0b1220'"],
+.fo-content [style*='background:"#0b1220"'],
+.fo-content [style*="#0f172a"],
+.fo-content [style*="background:#0b1220"],
+.fo-content [style*="background:#0f172a"] {
+  background:#ffffff !important;
+  color: var(--text) !important;
+  border-color: var(--line) !important;
+}
 
-/* Charts inside cards: darker labels and crisper grid */
-.fo-content section [role="img"] text{ fill:#334155 !important }   /* axis/labels */
-.fo-content section [role="img"] line{ stroke:#e5e7eb !important } /* grid/baseline */
+/* Inputs that were dark via inline styles */
+.fo-content [style*="input"][style*="#0b1220"],
+.fo-content input[style*="#0b1220"],
+.fo-content select[style*="#0b1220"],
+.fo-content textarea[style*="#0b1220"] {
+  background:#ffffff !important;
+  color:var(--text) !important;
+  border-color:#d7dde8 !important;
+}
+
+/* ---------- Spacing helpers ---------- */
+.fo-content .mb-0 { margin-bottom:0 !important; }
+.fo-content .mb-6 { margin-bottom:6px !important; }
+.fo-content .mb-8 { margin-bottom:8px !important; }
+.fo-content .mt-8 { margin-top:8px !important; }
+.fo-content .mt-12{ margin-top:12px !important; }
+
+/* ---------- Buttons row (right-aligned) ---------- */
+.fo-content .actions { display:flex; gap:8px; justify-content:flex-end; }
+
+/* ---------- Toast-like alert (optional) ---------- */
+.fo-content .alert {
+  padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#fff;
+}
+.fo-content .alert.info { border-color:#bfdbfe; background:#eff6ff; color:#1e3a8a; }
+.fo-content .alert.warn { border-color:#fde68a; background:#fffbeb; color:#7c2d12; }
+.fo-content .alert.err  { border-color:#fecaca; background:#fff1f2; color:#7f1d1d; }
+
+/* ---------- Ensure quick-list / edit modals sit above other modals ---------- */
+.fo-content ~ div[style*="z-index: 1200"],
+.fo-content ~ div[style*="z-index:1200"] { z-index: 1300 !important; }

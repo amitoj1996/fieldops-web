@@ -215,3 +215,5 @@
 /* ---------- Ensure quick-list / edit modals sit above other modals ---------- */
 .fo-content ~ div[style*="z-index: 1200"],
 .fo-content ~ div[style*="z-index:1200"] { z-index: 1300 !important; }
+/* --- remove header search --- */
+.topbar-search { display: none !important; }

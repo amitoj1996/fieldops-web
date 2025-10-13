@@ -1,6 +1,5 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState } from "react";
 
-/* ---- tiny auth hook (SWA) ---- */
 function useAuth() {
   const [me, setMe] = useState(null);
   useEffect(() => {
@@ -17,214 +16,129 @@ function useAuth() {
   return me;
 }
 
-export default function Home() {
+export default function IndexPage() {
   const me = useAuth();
-  const roles = useMemo(() => (me?.userRoles || []).map((r) => r.toLowerCase()), [me]);
+  const roles = (me?.userRoles || []).map((r) => r.toLowerCase());
   const isAdmin = roles.includes("admin");
-  const who = me?.userDetails || "";
-
-  const box = {
-    background: "#fff",
-    border: "1px solid #eef0f3",
-    borderRadius: 12,
-    boxShadow: "0 6px 18px rgba(16,24,40,0.06)",
-  };
+  const signedIn = !!me;
 
   return (
     <main style={{ padding: "24px", fontFamily: "-apple-system, system-ui, Segoe UI, Roboto" }}>
-      {/* HERO */}
-      <section
-        style={{
-          ...box,
-          padding: "28px 28px 20px",
-          background:
-            "linear-gradient(180deg, rgba(240,247,255,0.9) 0%, rgba(255,255,255,1) 70%)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-          <div
-            aria-hidden
-            style={{
-              width: 48,
-              height: 48,
-              borderRadius: 12,
-              background: "#e9f2ff",
-              border: "1px solid #d6e7ff",
-              display: "grid",
-              placeItems: "center",
-              fontWeight: 700,
-              color: "#0b4d8a",
-            }}
-          >
-            AOI
-          </div>
+      {/* Hero / brand card */}
+      <div style={heroCard}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
           <div>
-            <h1 style={{ margin: 0, fontSize: 22, lineHeight: 1.2 }}>
-              AeroOptimus Innovations
-            </h1>
-            <div style={{ color: "#667085", fontSize: 13, marginTop: 4 }}>
-              Field operations & expense tracking — simple, fast, and reliable.
+            <div style={brandRow}>
+              <div style={logoDot}>AOI</div>
+              <div style={brandTitle}>AeroOptimus Innovations</div>
             </div>
-          </div>
-          <div style={{ marginLeft: "auto" }}>
-            {me ? (
-              <span
-                style={{
-                  fontSize: 12,
-                  padding: "4px 8px",
-                  background: "#edf5ff",
-                  border: "1px solid #d6e7ff",
-                  borderRadius: 999,
-                  color: "#0b4d8a",
-                }}
-              >
-                Signed in as <strong>{who}</strong>
-              </span>
-            ) : null}
-          </div>
-        </div>
+            <div style={subtext}>Field operations & expense tracking — simple, fast, and reliable.</div>
 
-        <div style={{ marginTop: 16, display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {!me ? (
-            <>
-              <a
-                className="btn"
-                href="/.auth/login/aad?post_login_redirect_uri=/after-login"
-                style={primaryBtn}
-              >
-                Login with Microsoft
-              </a>
-              <a href="/employee" style={ghostBtn}>
-                Employee portal
-              </a>
-              <a href="/admin" style={ghostBtn}>
-                Admin console
-              </a>
-            </>
-          ) : (
-            <>
-              <a href="/employee" style={primaryBtn}>
-                Go to Employee portal
-              </a>
-              {isAdmin && (
-                <a href="/admin" style={secondaryBtn}>
-                  Open Admin console
+            {/* Primary actions */}
+            <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {!signedIn && (
+                <a href="/.auth/login/aad?post_login_redirect_uri=/after-login" style={btnPrimary}>
+                  Login with Microsoft
                 </a>
               )}
-              <a href="/.auth/logout?post_logout_redirect_uri=/" style={ghostBtn}>
-                Logout
-              </a>
-            </>
+
+              {signedIn && !isAdmin && (
+                <>
+                  <a href="/employee" style={btnPrimary}>Go to Employee portal</a>
+                  <a href="/.auth/logout?post_logout_redirect_uri=/" style={btnGhost}>Logout</a>
+                </>
+              )}
+
+              {signedIn && isAdmin && (
+                <>
+                  <a href="/admin" style={btnPrimary}>Go to Admin console</a>
+                  <a href="/employee" style={btnGhost}>Employee portal</a>
+                  <a href="/.auth/logout?post_logout_redirect_uri=/" style={btnGhost}>Logout</a>
+                </>
+              )}
+            </div>
+          </div>
+
+          {signedIn && (
+            <div style={signedAsPill}>Signed in as&nbsp;<strong>{me?.userDetails || me?.userId}</strong></div>
           )}
         </div>
-      </section>
+      </div>
 
-      {/* QUICK LINKS / INFO */}
-      <section
-        style={{
-          marginTop: 16,
-          display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(220px, 1fr))",
-          gap: 12,
-        }}
-      >
-        <Card
-          title="Employees"
-          desc="See assigned tasks, check in/out on site, and upload receipts."
-          href="/employee"
-          emoji="🧑‍💼"
-        />
-        <Card
-          title="Admins"
-          desc="Create tasks, manage budgets, and review expenses."
-          href="/admin"
-          emoji="🛠️"
-        />
-        <Card
-          title="Help"
-          desc="Need a hand? Contact your admin or support desk."
-          href="mailto:support@example.com"
-          emoji="💬"
-          external
-        />
-      </section>
-
-      {/* WHAT'S NEW */}
-      <section style={{ marginTop: 16, ...box, padding: 16 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>What’s new</div>
-        <ul style={{ margin: 0, paddingLeft: 18, color: "#475467", fontSize: 14 }}>
-          <li>Clean light theme across the app for better readability.</li>
-          <li>Interactive charts in Admin → Overview (legend & axis overlap fixed).</li>
-          <li>Faster modals and improved keyboard focus states.</li>
-        </ul>
-      </section>
+      {/* Help only (removed “Employees” & “Admins” tiles) */}
+      <div style={{ marginTop: 16 }}>
+        <div style={helpCard}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Need help?</div>
+          <div style={{ color: "#475467" }}>
+            Contact your admin or support desk. If you believe you should have admin access, ask an administrator to add you.
+          </div>
+        </div>
+      </div>
     </main>
   );
 }
 
-/* --- Small components & styles --- */
-function Card({ title, desc, href, emoji, external }) {
-  return (
-    <a
-      href={href}
-      target={external ? "_blank" : undefined}
-      rel={external ? "noreferrer" : undefined}
-      style={{
-        display: "block",
-        textDecoration: "none",
-        color: "inherit",
-        background: "#fff",
-        border: "1px solid #eef0f3",
-        borderRadius: 12,
-        boxShadow: "0 6px 18px rgba(16,24,40,0.06)",
-        padding: 14,
-        transition: "transform 120ms ease, box-shadow 120ms ease",
-      }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.transform = "translateY(-1px)";
-        e.currentTarget.style.boxShadow = "0 10px 24px rgba(16,24,40,0.08)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.transform = "none";
-        e.currentTarget.style.boxShadow = "0 6px 18px rgba(16,24,40,0.06)";
-      }}
-    >
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
-        <span style={{ fontSize: 18 }} aria-hidden>
-          {emoji}
-        </span>
-        <div style={{ fontWeight: 600 }}>{title}</div>
-      </div>
-      <div style={{ color: "#667085", fontSize: 13 }}>{desc}</div>
-    </a>
-  );
-}
+/* --- styles --- */
+const heroCard = {
+  background: "#ffffff",
+  border: "1px solid #EEF2F7",
+  borderRadius: 12,
+  padding: 16,
+  boxShadow: "0 1px 2px rgba(16,24,40,0.04)",
+};
 
-const primaryBtn = {
+const brandRow = { display: "flex", alignItems: "center", gap: 10 };
+const logoDot = {
+  width: 36,
+  height: 36,
+  borderRadius: 8,
+  background: "linear-gradient(135deg, #0b4d8a 0%, #1d6bbd 100%)",
+  color: "#fff",
+  display: "grid",
+  placeItems: "center",
+  fontWeight: 700,
+  fontSize: 13,
+  letterSpacing: 0.4,
+};
+const brandTitle = { fontSize: 20, fontWeight: 700, color: "#0F172A" };
+const subtext = { marginTop: 4, color: "#475467" };
+
+const btnPrimary = {
   display: "inline-block",
   textDecoration: "none",
   background: "#0b4d8a",
   color: "#fff",
-  padding: "8px 12px",
+  padding: "10px 14px",
   borderRadius: 8,
   border: "1px solid #0b4d8a",
   fontWeight: 600,
 };
 
-const secondaryBtn = {
-  ...primaryBtn,
-  background: "#1d6bbd",
-  borderColor: "#1d6bbd",
-};
-
-const ghostBtn = {
+const btnGhost = {
   display: "inline-block",
   textDecoration: "none",
   background: "#fff",
   color: "#0b4d8a",
-  padding: "8px 12px",
+  padding: "10px 14px",
   borderRadius: 8,
   border: "1px solid #cfe3ff",
   fontWeight: 600,
 };
 
+const signedAsPill = {
+  alignSelf: "flex-start",
+  background: "#F0F7FF",
+  color: "#0b4d8a",
+  border: "1px solid #DAE9FF",
+  borderRadius: 999,
+  padding: "6px 10px",
+  fontSize: 12,
+  whiteSpace: "nowrap",
+};
+
+const helpCard = {
+  background: "#F8FAFF",
+  border: "1px solid #EEF4FF",
+  borderRadius: 10,
+  padding: 12,
+};

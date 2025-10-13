@@ -988,7 +988,45 @@ function TopSpendersPanel({ ranked, topSpendN, setTopSpendN }) {
 /* ---------- Products Admin component ---------- */
 function ProductAdmin({ products, reload, tenantId }) {
   const [savingProduct, setSavingProduct] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
   const [newProduct, setNewProduct] = useState({ name: "", sku: "" });
+
+  async function removeProduct(id, name) {
+    if (!id) return;
+    const ok = window.confirm(`Delete product "${name || id}"? This does not change existing tasks.`);
+    if (!ok) return;
+    setDeletingId(id);
+    try {
+      let r = await fetch(`/api/products/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId, productId: id })
+      });
+
+      // If server says it's still referenced, allow force delete confirmation.
+      if (r.status === 409) {
+        const j = await r.json().catch(() => ({}));
+        const forceOk = window.confirm((j?.error || "Product used in tasks.") + "\nForce delete anyway?");
+        if (!forceOk) return;
+        r = await fetch(`/api/products/delete`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tenantId, productId: id, force: true })
+        });
+      }
+
+      const j2 = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        alert(j2?.error || `Delete failed (HTTP ${r.status})`);
+        return;
+      }
+      await reload();
+    } catch (e) {
+      alert(e.message || "Delete failed");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   return (
     <>
@@ -1009,7 +1047,7 @@ function ProductAdmin({ products, reload, tenantId }) {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(body)
             });
-            const j = await r.json();
+            const j = await r.json().catch(() => ({}));
             if (!r.ok) return alert(j.error || "Could not create product");
             setNewProduct({ name: "", sku: "" });
             await reload();
@@ -1039,19 +1077,39 @@ function ProductAdmin({ products, reload, tenantId }) {
         {products.length === 0 ? (
           <p style={{ color: "#666" }}>No products yet.</p>
         ) : (
-          <ul>
-            {products.map((p) => (
-              <li key={p.id || p.productId}>
-                {(p.name || p.title || p.id || p.productId) + (p.sku ? ` — ${p.sku}` : "")}
-              </li>
-            ))}
+          <ul style={{ listStyle: "none", padding: 0, margin: 0, maxWidth: 720 }}>
+            {products.map((p) => {
+              const id = p.id || p.productId;
+              const label = (p.name || p.title || id) + (p.sku ? ` — ${p.sku}` : "");
+              const busy = deletingId === id;
+              return (
+                <li
+                  key={id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "8px 0",
+                    borderBottom: "1px solid #f1f1f1"
+                  }}
+                >
+                  <span>{label}</span>
+                  <button
+                    onClick={() => removeProduct(id, p.name || p.title)}
+                    disabled={busy}
+                    style={{ background: "#fff0f0", border: "1px solid #f2b5b5", color: "#8a0b0b" }}
+                  >
+                    {busy ? "Deleting…" : "Delete"}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
     </>
   );
 }
-
 /* ---------- Tasks Tab ---------- */
 function TasksTab(props) {
   const {
@@ -1285,6 +1343,33 @@ function ExpensesTab(props) {
     setSearch
   } = props;
 
+  const [deletingId, setDeletingId] = useState(null);
+
+  async function removeExpense(expense) {
+    if (!expense?.id) return;
+    const ok = window.confirm(`Delete this expense (${expense.category || "uncategorized"} • ${expense.id})?`);
+    if (!ok) return;
+    setDeletingId(expense.id);
+    try {
+      const r = await fetch(`/api/expenses/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId: "default", expenseId: expense.id })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        alert(j?.error || `Delete failed (HTTP ${r.status})`);
+        return;
+      }
+      // Easiest way to refresh both lists without threading reload callbacks
+      window.location.reload();
+    } catch (e) {
+      alert(e.message || "Delete failed");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   return (
     <>
       <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12 }}>
@@ -1302,6 +1387,7 @@ function ExpensesTab(props) {
               const remBefore = e.approval?.remainingBefore;
               const limit = e.approval?.limit;
               const ocrDiff = e.editedTotal != null && Number(e.editedTotal) !== Number(e.total);
+              const busy = deletingId === e.id;
               return (
                 <li key={e.id} style={{ padding: "12px 0", borderBottom: "1px solid #f1f1f1" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -1320,8 +1406,15 @@ function ExpensesTab(props) {
                         Limit: {ru(limit)} • Remaining before: {ru(remBefore)}
                       </div>
                     </div>
-                    <div style={{ minWidth: 220 }}>
+                    <div style={{ minWidth: 260, display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}>
                       <button onClick={() => openReceipt(e)}>Open receipt</button>
+                      <button
+                        onClick={() => removeExpense(e)}
+                        disabled={busy}
+                        style={{ background: "#fff0f0", border: "1px solid #f2b5b5", color: "#8a0b0b" }}
+                      >
+                        {busy ? "Deleting…" : "Delete"}
+                      </button>
                     </div>
                   </div>
 
@@ -1393,6 +1486,7 @@ function ExpensesTab(props) {
                   const amount = Number(e.editedTotal ?? e.total ?? 0) || 0;
                   const ocrDiff = e.editedTotal != null && Number(e.editedTotal) !== Number(e.total);
                   const cat = e.category || "Other";
+                  const busy = deletingId === e.id;
                   return (
                     <li key={e.id} style={{ padding: "10px 0", borderBottom: "1px solid " + "#f3f3f3" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -1406,14 +1500,21 @@ function ExpensesTab(props) {
                             {ru(amount)}
                             {ocrDiff && <span style={{ marginLeft: 8, color: "#b25" }}>edited (OCR was {ru(e.total)})</span>}
                           </div>
-                          {e.approval?.note && e.approval?.status === "REJECTED" && (
+                          {e.approval?.status === "REJECTED" && e.approval?.note && (
                             <div style={{ marginTop: 6, fontSize: 12, color: "#b22" }}>
                               Admin rejection note: {e.approval.note}
                             </div>
                           )}
                         </div>
-                        <div style={{ minWidth: 220 }}>
+                        <div style={{ minWidth: 260, display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}>
                           <button onClick={() => openReceipt(e)}>Open receipt</button>
+                          <button
+                            onClick={() => removeExpense(e)}
+                            disabled={busy}
+                            style={{ background: "#fff0f0", border: "1px solid #f2b5b5", color: "#8a0b0b" }}
+                          >
+                            {busy ? "Deleting…" : "Delete"}
+                          </button>
                         </div>
                       </div>
                     </li>
@@ -1426,7 +1527,6 @@ function ExpensesTab(props) {
     </>
   );
 }
-
 /* ---------- Performance Tab ---------- */
 function PerformanceTab({ performance, opiN, setOpiN }) {
   return (

@@ -1011,3 +1011,83 @@ def tasks_update(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}),
                                  mimetype="application/json", status_code=500)
+
+# ---- Products (delete)
+@app.route(route="products/delete", methods=["POST","DELETE"])
+def products_delete(req: func.HttpRequest) -> func.HttpResponse:
+    # Admin only
+    pr, err = _ensure_admin(req)
+    if err: return err
+    try:
+        if req.method.upper() == "DELETE":
+            tenant = req.params.get("tenantId", "default")
+            pid    = req.params.get("productId") or req.params.get("id")
+            force  = (req.params.get("force","false").lower() == "true")
+        else:
+            data   = req.get_json()
+            tenant = (data.get("tenantId") or "default").strip()
+            pid    = (data.get("productId") or data.get("id") or "").strip()
+            force  = bool(data.get("force", False))
+
+        if not pid:
+            return func.HttpResponse(json.dumps({"error":"productId required"}),
+                                     mimetype="application/json", status_code=400)
+
+        # Block deletion if used in any tasks unless force=true
+        if not force:
+            tc = _tasks_container()
+            q = ("SELECT TOP 1 c.id FROM c WHERE c.docType='Task' AND c.tenantId=@t "
+                 "AND EXISTS(SELECT VALUE x FROM x IN c.items WHERE x.productId=@pid)")
+            ref = list(tc.query_items(q, parameters=[{"name":"@t","value":tenant},{"name":"@pid","value":pid}],
+                                      enable_cross_partition_query=True))
+            if ref:
+                return func.HttpResponse(json.dumps({"error":"Product used in existing tasks. Use force=true to delete anyway."}),
+                                         mimetype="application/json", status_code=409)
+
+        cc = _catalog_container()
+        try:
+            _ = cc.read_item(item=pid, partition_key=tenant)
+        except Exception:
+            return func.HttpResponse(json.dumps({"error":"product not found"}), mimetype="application/json", status_code=404)
+
+        cc.delete_item(item=pid, partition_key=tenant)
+        return func.HttpResponse(json.dumps({"ok": True, "productId": pid}),
+                                 mimetype="application/json", status_code=200)
+
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+
+# ---- Expenses (delete)
+@app.route(route="expenses/delete", methods=["POST","DELETE"])
+def expenses_delete(req: func.HttpRequest) -> func.HttpResponse:
+    # Admin only
+    pr, err = _ensure_admin(req)
+    if err: return err
+    try:
+        if req.method.upper() == "DELETE":
+            tenant = req.params.get("tenantId","default")
+            exp_id = req.params.get("expenseId") or req.params.get("id")
+        else:
+            data   = req.get_json()
+            tenant = (data.get("tenantId") or "default").strip()
+            exp_id = (data.get("expenseId") or data.get("id") or "").strip()
+
+        if not exp_id:
+            return func.HttpResponse(json.dumps({"error":"expenseId required"}),
+                                     mimetype="application/json", status_code=400)
+
+        ec = _expenses_container()
+        try:
+            _ = ec.read_item(item=exp_id, partition_key=tenant)
+        except Exception:
+            return func.HttpResponse(json.dumps({"error":"expense not found"}), mimetype="application/json", status_code=404)
+
+        ec.delete_item(item=exp_id, partition_key=tenant)
+        return func.HttpResponse(json.dumps({"ok": True, "expenseId": exp_id}),
+                                 mimetype="application/json", status_code=200)
+
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}),
+                                 mimetype="application/json", status_code=500)
+

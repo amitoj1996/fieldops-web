@@ -125,3 +125,22 @@ label{ font-size:12px; color:var(--muted); display:inline-block }
 label > input, label > select, label > textarea{ margin-top:6px }
 h1{ font-size:28px; margin:0 0 8px } h2{ font-size:20px; margin:0 0 10px } h3{ font-size:16px; margin:8px 0 }
 .small,.help,[style*="fontSize: 12px"][style*="color: \"#666\""]{ color:var(--muted)!important }
+
+/* ---------- Readability patch: force light cards in the main content ---------- */
+.fo-content section{
+  background:#ffffff !important;
+  color:#0b1220 !important;
+  border:1px solid #e5eaf0 !important;
+  border-radius:12px !important;
+  box-shadow:0 8px 24px rgba(2,6,23,.06);
+}
+
+/* Tables inside cards inherit proper text color */
+.fo-content section table{ color:inherit !important }
+
+/* Make "small"/helper text legible on light */
+.fo-content section .small{ color:#64748b !important }
+
+/* Charts inside cards: darker labels and crisper grid */
+.fo-content section [role="img"] text{ fill:#334155 !important }   /* axis/labels */
+.fo-content section [role="img"] line{ stroke:#e5e7eb !important } /* grid/baseline */

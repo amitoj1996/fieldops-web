@@ -1,5 +1,5 @@
 /* ==========================================================================
-   AeroOptimus Innovations – UI (light theme)
+   FieldOps – UI (light theme)
    This file styles ONLY the main page content area (inside .fo-content),
    keeping the shell/navigation (styles/shell.css) untouched.
    ========================================================================== */
@@ -215,5 +215,3 @@
 /* ---------- Ensure quick-list / edit modals sit above other modals ---------- */
 .fo-content ~ div[style*="z-index: 1200"],
 .fo-content ~ div[style*="z-index:1200"] { z-index: 1300 !important; }
-/* --- remove header search --- */
-.topbar-search { display: none !important; }

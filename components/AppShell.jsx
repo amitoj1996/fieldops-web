@@ -86,8 +86,8 @@ export default function AppShell({ children }) {
       {/* Sidebar */}
       <aside className="fo-sidebar" aria-label="Main">
         <div className="fo-brand">
-          <a href="/" className="fo-logo" aria-label="FieldOps">FO</a>
-          <span className="fo-brand-name">FieldOps</span>
+          <a href="/" className="fo-logo" aria-label="AeroOptimus Innovations">FO</a>
+          <span className="fo-brand-name">AeroOptimus Innovations</span>
         </div>
         <nav className="fo-nav">
           {nav.map(link => (

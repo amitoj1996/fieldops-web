@@ -22,7 +22,7 @@ export default function Home() {
   if (!checked) {
     return (
       <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto"}}>
-        <h1>FieldOps</h1>
+        <h1>AeroOptimus Innovations</h1>
         <p>Checking your session…</p>
       </main>
     );
@@ -30,7 +30,7 @@ export default function Home() {
 
   return (
     <main style={{padding:"2rem", fontFamily:"-apple-system, system-ui, Segoe UI, Roboto"}}>
-      <h1>FieldOps</h1>
+      <h1>AeroOptimus Innovations</h1>
       <p>Welcome! Please sign in to use the app.</p>
       <p>
         <a href="/.auth/login/aad?post_login_redirect_uri=/after-login">Login</a>

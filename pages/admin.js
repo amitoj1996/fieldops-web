@@ -870,6 +870,7 @@ export default function Admin() {
           setStatusFilter={setStatusFilter}
           search={search}
           setSearch={setSearch}
+        reloadExpenses={() => { loadPending(); loadAllExpenses(); }}
         />
       )}
 
@@ -1362,7 +1363,7 @@ function ExpensesTab(props) {
         return;
       }
       // Easiest way to refresh both lists without threading reload callbacks
-      window.location.reload();
+      if (typeof reloadExpenses === "function") { await reloadExpenses(); }
     } catch (e) {
       alert(e.message || "Delete failed");
     } finally {

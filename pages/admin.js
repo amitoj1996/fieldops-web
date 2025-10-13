@@ -56,6 +56,11 @@ export default function Admin() {
   const me = useAuth();
   const [tenantId] = useState("default");
 
+  const isAdmin = useMemo(() => {
+    const roles = (me?.userRoles || me?.roles || []).map((r) => String(r).toLowerCase());
+    return roles.includes("admin");
+  }, [me]);
+
   /* ---------- Global filters shared by all tabs ---------- */
   const [reportFrom, setReportFrom] = useState("");
   const [reportTo, setReportTo] = useState("");
@@ -89,6 +94,24 @@ export default function Admin() {
   const [loadingPending, setLoadingPending] = useState(true);
   const [expenses, setExpenses] = useState([]);
   const [loadingAll, setLoadingAll] = useState(true);
+
+  // NEW: users (admin tab)
+  const [users, setUsers] = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  async function loadUsers() {
+    setLoadingUsers(true);
+    try {
+      const r = await fetch(`/api/users?tenantId=${tenantId}`);
+      const j = await r.json().catch(() => ([]));
+      if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+      setUsers(Array.isArray(j) ? j : (j.items || []));
+    } catch (e) {
+      console.error("loadUsers:", e);
+      setUsers([]);
+    } finally {
+      setLoadingUsers(false);
+    }
+  }
 
   const tasksById = useMemo(() => {
     const m = {};
@@ -141,6 +164,12 @@ export default function Admin() {
     loadPending();
     loadAllExpenses();
   }, [tenantId]);
+
+  // Load users when Users tab is opened
+  const [tab, setTab] = useState("overview");
+  useEffect(() => {
+    if (tab === "users" && isAdmin) loadUsers();
+  }, [tab, isAdmin, tenantId]);
 
   async function openReceipt(exp) {
     try {
@@ -399,8 +428,17 @@ export default function Admin() {
   }, [tasksInRange, expensesInRange, tasksById, rangeDays, opiN]);
 
   /* ---------- UI state: tabs ---------- */
-  const tabs = ["overview", "performance", "eom", "products", "tasks", "expenses", "reports"];
-  const [tab, setTab] = useState("overview");
+  const navs = [
+    ["overview", "Overview"],
+    ["performance", "Performance"],
+    ["eom", "EoM"],
+    ["products", "Products"],
+    ["tasks", "Tasks"],
+    ["expenses", "Expenses"],
+    ["reports", "Reports"],
+    ...(isAdmin ? [["users", "Users"]] : [])
+  ];
+
   const [topSpendN, setTopSpendN] = useState(5);
 
   // Auto-set current month when switching to EoM
@@ -703,6 +741,7 @@ export default function Admin() {
       <h1>Admin</h1>
       <div style={{ marginBottom: 12, color: "#444" }}>
         Signed in as: <strong>{me?.userDetails || "—"}</strong>
+        {!isAdmin && <span style={{ marginLeft: 8, color: "#a44" }}>(limited access)</span>}
       </div>
 
       {/* Global date filters + Tabs */}
@@ -733,15 +772,7 @@ export default function Admin() {
         </div>
 
         <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {[
-            ["overview", "Overview"],
-            ["performance", "Performance"],
-            ["eom", "EoM"],
-            ["products", "Products"],
-            ["tasks", "Tasks"],
-            ["expenses", "Expenses"],
-            ["reports", "Reports"]
-          ].map(([id, label]) => {
+          {navs.map(([id, label]) => {
             const active = tab === id;
             return (
               <button
@@ -891,6 +922,11 @@ export default function Admin() {
             Leave fields blank for an all-time report. “To” is inclusive (CSV logic matches).
           </div>
         </section>
+      )}
+
+      {/* -------- USERS (ADMIN) -------- */}
+      {tab === "users" && isAdmin && (
+        <UsersTab users={users} loading={loadingUsers} reload={loadUsers} tenantId={tenantId} />
       )}
 
       {/* Edit Modal */}
@@ -1423,6 +1459,240 @@ function ExpensesTab(props) {
           })()}
       </section>
     </>
+  );
+}
+
+/* ---------- NEW: Users (Admin) ---------- */
+function UsersTab({ users, loading, reload, tenantId }) {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [inviteLink, setInviteLink] = useState("");
+
+  async function createUser(ev) {
+    ev.preventDefault();
+    const e = email.trim().toLowerCase();
+    if (!e || !/^[^@]+@[^@]+\.[^@]+$/.test(e)) {
+      alert("Enter a valid email");
+      return;
+    }
+    setSaving(true);
+    try {
+      const body = {
+        tenantId,
+        email: e,
+        displayName: name.trim() || undefined,
+        roles: ["employee", ...(isAdmin ? ["admin"] : [])]
+      };
+      const r = await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+      await reload();
+      setEmail(""); setName(""); setIsAdmin(false);
+      alert("User created");
+    } catch (err) {
+      alert(err.message || "Could not create user");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function buildAcceptLink(resp) {
+    // Accept link can come in different shapes from backend
+    const link = resp.acceptUrl || resp.url || resp.link || (resp.token ? `/api/users/accept?token=${encodeURIComponent(resp.token)}&tenantId=${encodeURIComponent(tenantId)}` : "");
+    return link;
+  }
+
+  async function invite(ev) {
+    ev?.preventDefault?.();
+    const e = email.trim().toLowerCase();
+    if (!e || !/^[^@]+@[^@]+\.[^@]+$/.test(e)) {
+      alert("Enter a valid email");
+      return;
+    }
+    setSaving(true);
+    try {
+      const body = {
+        tenantId,
+        email: e,
+        displayName: name.trim() || undefined,
+        roles: ["employee", ...(isAdmin ? ["admin"] : [])]
+      };
+      const r = await fetch("/api/users/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+      const link = buildAcceptLink(j);
+      setInviteLink(link || "");
+      await reload();
+      alert("Invite created. Share the activation link with the employee.");
+    } catch (err) {
+      alert(err.message || "Could not invite user");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function resendInvite(u) {
+    try {
+      const r = await fetch("/api/users/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId, email: u.email, roles: u.roles, displayName: u.displayName })
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+      const link = buildAcceptLink(j);
+      setInviteLink(link || "");
+      await reload();
+      alert("Invite re-generated.");
+    } catch (e) {
+      alert(e.message || "Could not resend invite");
+    }
+  }
+
+  async function setStatus(u, status) {
+    try {
+      const r = await fetch("/api/users/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId, userId: u.id, status })
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+      await reload();
+    } catch (e) {
+      alert(e.message || "Could not update status");
+    }
+  }
+
+  async function toggleAdmin(u) {
+    const roles = Array.from(new Set([...(u.roles || [] )]));
+    const has = roles.map((r) => String(r).toLowerCase()).includes("admin");
+    const next = has ? roles.filter((r) => String(r).toLowerCase() !== "admin") : [...roles, "admin"];
+    try {
+      const r = await fetch("/api/users/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId, userId: u.id, roles: next })
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+      await reload();
+    } catch (e) {
+      alert(e.message || "Could not update roles");
+    }
+  }
+
+  async function copy(text) {
+    try { await navigator.clipboard.writeText(text); alert("Link copied"); }
+    catch { /* noop */ }
+  }
+
+  return (
+    <section style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, marginBottom: 18 }}>
+      <h2 style={{ marginTop: 0 }}>Users</h2>
+
+      <form onSubmit={createUser} style={{ display: "grid", gridTemplateColumns: "2fr 2fr auto auto", gap: 8, alignItems: "end", maxWidth: 900 }}>
+        <label>
+          Email
+          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@company.com" />
+        </label>
+        <label>
+          Name (optional)
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Display name" />
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <input type="checkbox" checked={isAdmin} onChange={(e) => setIsAdmin(e.target.checked)} />
+          Admin
+        </label>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="submit" disabled={saving}>Add</button>
+          <button type="button" onClick={invite} disabled={saving}>Add & Invite</button>
+        </div>
+      </form>
+
+      {inviteLink && (
+        <div style={{ marginTop: 8, padding: "8px 10px", border: "1px dashed #c8e0ff", background: "#f7fbff", borderRadius: 8 }}>
+          <div style={{ fontSize: 12, color: "#234" }}>Activation link (user must sign in first, then open this):</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6, wordBreak: "break-all" }}>
+            <code style={{ background: "#fff", padding: "6px 8px", borderRadius: 6, border: "1px solid #e6eefc" }}>{inviteLink}</code>
+            <button onClick={() => copy(inviteLink)}>Copy</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 16 }}>
+        <h3 style={{ margin: "8px 0" }}>Members</h3>
+        {loading ? (
+          <p>Loading…</p>
+        ) : users.length === 0 ? (
+          <p style={{ color: "#666" }}>No users yet.</p>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+              <thead>
+                <tr style={{ textAlign: "left", borderBottom: "1px solid #eee" }}>
+                  <th style={{ padding: "8px" }}>Name</th>
+                  <th style={{ padding: "8px" }}>Email</th>
+                  <th style={{ padding: "8px" }}>Roles</th>
+                  <th style={{ padding: "8px" }}>Status</th>
+                  <th style={{ padding: "8px" }}>Invited</th>
+                  <th style={{ padding: "8px" }}>Activated</th>
+                  <th style={{ padding: "8px" }} />
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u) => {
+                  const roles = (u.roles || []).join(", ") || "employee";
+                  return (
+                    <tr key={u.id} style={{ borderBottom: "1px solid #f4f4f4" }}>
+                      <td style={{ padding: "8px" }}>{u.displayName || "—"}</td>
+                      <td style={{ padding: "8px" }}>{u.email}</td>
+                      <td style={{ padding: "8px" }}>{roles}</td>
+                      <td style={{ padding: "8px" }}>
+                        <span style={{
+                          fontSize: 12,
+                          padding: "2px 6px",
+                          borderRadius: 6,
+                          background: u.status === "ACTIVE" ? "#e8fff2" : u.status === "DISABLED" ? "#ffe8e8" : "#fff4e5",
+                          color: u.status === "ACTIVE" ? "#0b6d3d" : u.status === "DISABLED" ? "#8a0b0b" : "#8a5b00"
+                        }}>
+                          {u.status || "PENDING_INVITE"}
+                        </span>
+                      </td>
+                      <td style={{ padding: "8px" }}>{u.invitedAt ? new Date(u.invitedAt).toLocaleString() : "—"}</td>
+                      <td style={{ padding: "8px" }}>{u.activatedAt ? new Date(u.activatedAt).toLocaleString() : "—"}</td>
+                      <td style={{ padding: "8px", display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        <button onClick={() => resendInvite(u)}>Invite/Resend</button>
+                        {String(roles).toLowerCase().includes("admin") ? (
+                          <button onClick={() => toggleAdmin(u)}>Remove admin</button>
+                        ) : (
+                          <button onClick={() => toggleAdmin(u)}>Make admin</button>
+                        )}
+                        {u.status === "ACTIVE" ? (
+                          <button onClick={() => setStatus(u, "DISABLED")}>Deactivate</button>
+                        ) : (
+                          <button onClick={() => setStatus(u, "ACTIVE")}>Activate</button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 

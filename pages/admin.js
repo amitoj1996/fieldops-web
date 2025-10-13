@@ -2202,8 +2202,8 @@ function QuickListModal({ title, rows, onClose, onEdit, onDelete }) {
                       {t.slaEnd ? new Date(t.slaEnd).toLocaleString() : "—"}
                     </td>
                     <td style={{ padding: "8px", display: "flex", gap: 8 }}>
-                      <button onClick={() => onEdit(t)}>Edit</button>
-                      <button onClick={() => onDelete(t)}>Delete</button>
+                      <button onClick={() => { onClose(); onEdit(t); }}>Edit</button>
+                      <button onClick={() => { onClose(); onDelete(t); }}>Delete</button>
                     </td>
                   </tr>
                 ))}

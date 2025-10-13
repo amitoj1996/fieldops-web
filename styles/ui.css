@@ -1,0 +1,127 @@
+/* -------------------------------------------------------
+   FieldOps “Polish Pack” — Modern skin for all pages
+--------------------------------------------------------*/
+
+/* ---------- Theme ---------- */
+:root{
+  --bg:#f7f9fc; --bg-weak:#eef2f7; --surface:#ffffff; --text:#0e1320;
+  --muted:#5b6473; --border:#e5eaf0; --ring:#2b7fff; --ring-soft:rgba(43,127,255,.18);
+  --shadow:0 8px 24px rgba(15,23,42,.06);
+  --radius:12px; --radius-sm:10px; --radius-lg:16px;
+  --brand:#2563eb; --brand-2:#60a5fa; --danger:#e11d48; --ok:#16a34a; --warn:#f59e0b;
+}
+@media (prefers-color-scheme: dark) {
+  :root{
+    --bg:#0b1220; --bg-weak:#0f172a; --surface:#111827; --text:#e5e7eb; --muted:#9ca3af; --border:#1f2937;
+    --ring:#60a5fa; --ring-soft:rgba(96,165,250,.22); --shadow:0 12px 28px rgba(0,0,0,.45);
+    --brand:#60a5fa; --brand-2:#93c5fd;
+  }
+}
+
+/* ---------- Base ---------- */
+*{ box-sizing:border-box }
+html,body,#__next{ height:100% }
+html{ -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale }
+body{
+  margin:0; color:var(--text);
+  background:
+    radial-gradient(1200px 600px at 20% -10%, var(--bg-weak), transparent 60%),
+    radial-gradient(1000px 600px at 110% -20%, var(--bg-weak), transparent 55%),
+    var(--bg);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  line-height:1.35;
+}
+@media (prefers-reduced-motion:no-preference){ :root{ --ease:cubic-bezier(.2,.8,.2,1) } }
+
+main{ padding-bottom:40px }
+main h1,h2,h3{ letter-spacing:.2px }
+section{
+  background:var(--surface)!important; border:1px solid var(--border)!important;
+  border-radius:var(--radius)!important; box-shadow:var(--shadow);
+}
+
+/* Sticky bar polish (date filters + tabs) */
+main > div[style*="position: sticky"]{
+  backdrop-filter:saturate(1.2) blur(6px);
+  border:1px solid var(--border)!important;
+  box-shadow:0 6px 22px rgba(15,23,42,.06);
+}
+
+/* Keep top Nav ABOVE sticky content (overrides inline z-index) */
+nav[style*="position:sticky"], nav[style*="position: sticky"]{
+  z-index:1200 !important;
+  background:var(--surface)!important;
+  border-bottom:1px solid var(--border)!important;
+  box-shadow:0 8px 20px rgba(15,23,42,.06);
+}
+
+/* ---------- Buttons ---------- */
+button{
+  appearance:none; border:1px solid var(--border);
+  background:linear-gradient(180deg,#fff,#f7f8fb); color:var(--text);
+  border-radius:var(--radius-sm); padding:8px 12px; font-weight:600; letter-spacing:.2px;
+  transition:transform .08s var(--ease), box-shadow .12s var(--ease), background .12s var(--ease), border-color .12s var(--ease);
+  cursor:pointer;
+}
+button:hover{ transform:translateY(-1px); box-shadow:0 6px 16px rgba(2,6,23,.08); background:linear-gradient(180deg,#fff,#f0f3f8); border-color:#d5dbe5 }
+button:active{ transform:translateY(0); box-shadow:0 2px 8px rgba(2,6,23,.08) }
+button:disabled{ opacity:.6; cursor:not-allowed; transform:none; box-shadow:none }
+button[data-variant="primary"]{ background:linear-gradient(180deg,var(--brand),var(--brand-2)); color:#fff; border-color:transparent }
+button[data-variant="danger"]{  background:linear-gradient(180deg,var(--danger),#fb7185); color:#fff; border-color:transparent }
+
+/* ---------- Inputs / selects ---------- */
+input,select,textarea{
+  width:100%; border:1px solid var(--border)!important; background:var(--surface);
+  border-radius:10px!important; padding:9px 10px!important; color:var(--text); outline:none;
+  transition: box-shadow .12s var(--ease), border-color .12s var(--ease), background .12s var(--ease);
+}
+input::placeholder,textarea::placeholder{ color:#9aa3b2 }
+input:focus,select:focus,textarea:focus{ border-color:var(--ring)!important; box-shadow:0 0 0 4px var(--ring-soft) }
+input[type="date"],input[type="time"],select{ line-height:1.1; padding:8px 10px!important }
+
+/* ---------- Tables ---------- */
+table{ width:100%; border-collapse:collapse; border-spacing:0; font-size:14px }
+thead th{
+  position:sticky; top:0; z-index:1;
+  background:linear-gradient(180deg,var(--surface), color-mix(in oklab, var(--surface) 85%, #000 15%));
+  border-bottom:1px solid var(--border); padding:10px 8px!important;
+  text-transform:uppercase; letter-spacing:.4px; font-size:12px; color:var(--muted);
+}
+tbody td{ border-bottom:1px solid color-mix(in oklab, var(--border) 92%, #000 8%); padding:10px 8px!important }
+tbody tr:hover{ background:color-mix(in oklab, var(--surface) 88%, var(--bg-weak) 12%) }
+
+/* ---------- KPI cards (your stat tiles) ---------- */
+div[style*="padding: \"10px 12px\""][style*="border: \"1px solid #eee\""]{
+  border:1px solid var(--border)!important; border-radius:12px!important;
+  background:linear-gradient(180deg,var(--surface),color-mix(in oklab, var(--surface) 92%, #000 8%))!important;
+  box-shadow:var(--shadow);
+  transition:transform .12s var(--ease), box-shadow .12s var(--ease), background .12s var(--ease);
+}
+div[style*="padding: \"10px 12px\""][style*="border: \"1px solid #eee\""]:hover{
+  transform:translateY(-2px); box-shadow:0 10px 28px rgba(2,6,23,.10);
+}
+
+/* ---------- Status tags ---------- */
+span[style*="padding: \"2px 6px\""]{ border:1px solid rgba(0,0,0,.05); font-weight:600 }
+
+/* ---------- Modals ---------- */
+div[style*="position: fixed"][style*="inset: 0"][style*="rgba(0,0,0,0.35)"]{ backdrop-filter:blur(6px) saturate(1.1) }
+div[style*="maxHeight: \"90vh\""][style*="overflow: \"auto\""]{
+  border-radius:var(--radius-lg)!important; box-shadow:0 24px 64px rgba(2,6,23,.30); border:1px solid var(--border)!important;
+}
+
+/* ---------- Tooltips ---------- */
+div[style*="position: \"absolute\""][style*=\"pointerEvents: \\\"none\\\"\"]{ border-radius:10px!important }
+
+/* ---------- Scrollbars ---------- */
+*::-webkit-scrollbar{ height:10px; width:10px }
+*::-webkit-scrollbar-thumb{
+  background:color-mix(in oklab, var(--text) 10%, transparent);
+  border-radius:10px; border:3px solid transparent; background-clip:padding-box;
+}
+
+/* ---------- Small niceties ---------- */
+label{ font-size:12px; color:var(--muted); display:inline-block }
+label > input, label > select, label > textarea{ margin-top:6px }
+h1{ font-size:28px; margin:0 0 8px } h2{ font-size:20px; margin:0 0 10px } h3{ font-size:16px; margin:8px 0 }
+.small,.help,[style*="fontSize: 12px"][style*="color: \"#666\""]{ color:var(--muted)!important }

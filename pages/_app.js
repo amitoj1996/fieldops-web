@@ -1,3 +1,4 @@
+import useSeenUser from "../lib/useSeenUser";
 import "../styles/ui.css";      // you already added this
 import "../styles/shell.css";   // new shell styles
 import AppShell from "../components/AppShell";

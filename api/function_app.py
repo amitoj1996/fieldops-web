@@ -1091,3 +1091,140 @@ def expenses_delete(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps({"error": str(e)}),
                                  mimetype="application/json", status_code=500)
 
+# ---- Users directory (for assignee picker)
+def _users_container():
+    return _get_container_named(os.environ.get("USERS_CONTAINER", "Users"))
+
+def _derive_display_name(email: str) -> str:
+    if not email: return ""
+    base = (email.split("@")[0] or "").replace(".", " ").replace("_", " ")
+    return " ".join([w.capitalize() for w in base.split() if w])
+
+@app.route(route="users/seen", methods=["POST","GET"])
+def users_seen(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Upsert the current authenticated user into the Users directory.
+    """
+    pr, err = _ensure_auth(req)
+    if err: return err
+    try:
+        display = None
+        try:
+            enc = req.headers.get("x-ms-client-principal")
+            if enc:
+                data = json.loads(base64.b64decode(enc).decode("utf-8"))
+                for cl in data.get("claims") or []:
+                    if (cl.get("typ") or "").endswith("/name"):
+                        display = cl.get("val")
+                        break
+        except Exception:
+            display = None
+
+        email = (pr.get("userDetails") or pr.get("userId") or "").strip().lower()
+        if not email:
+            return func.HttpResponse(json.dumps({"ok": False, "error": "No email"}), mimetype="application/json", status_code=400)
+
+        roles = [r for r in (pr.get("roles") or []) if r in ("employee","admin")]
+        if not roles:
+            roles = ["employee"]
+
+        c = _users_container()
+        user_id = email
+        try:
+            doc = c.read_item(item=user_id, partition_key="default")
+        except Exception:
+            doc = None
+
+        if not display:
+            display = (doc or {}).get("displayName") or _derive_display_name(email)
+
+        body = {
+            "id": user_id,
+            "tenantId": "default",
+            "docType": "User",
+            "email": email,
+            "displayName": display,
+            "roles": roles,
+            "updatedAt": _now_iso()
+        }
+        if doc:
+            c.replace_item(item=user_id, body=body)
+        else:
+            body["createdAt"] = _now_iso()
+            c.create_item(body)
+
+        return func.HttpResponse(json.dumps({"ok": True, "user": body}), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+@app.route(route="users", methods=["GET"])
+def users_list(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Admin-only: list users for the assignee picker.
+    Optional query params:
+      - q: search substring on name/email
+      - includeAdmins=true to include admins
+    """
+    pr, err = _ensure_admin(req)
+    if err: return err
+    try:
+        qtxt = (req.params.get("q") or "").strip().lower()
+        include_admins = (req.params.get("includeAdmins","false").lower() == "true")
+        c = _users_container()
+        sql = "SELECT c.id, c.email, c.displayName, c.roles FROM c WHERE c.tenantId=@t AND c.docType='User'"
+        rows = list(c.query_items(sql, parameters=[{"name":"@t","value":"default"}], enable_cross_partition_query=True))
+        out = []
+        for r in rows:
+            roles = [x for x in (r.get("roles") or [])]
+            if not include_admins and "admin" in roles:
+                continue
+            if qtxt:
+                hay = f"{(r.get('displayName') or '').lower()} {(r.get('email') or '').lower()}"
+                if qtxt not in hay:
+                    continue
+            out.append({
+                "email": r.get("email"),
+                "displayName": r.get("displayName"),
+                "roles": roles
+            })
+        out.sort(key=lambda x: ((x.get("displayName") or "").lower(), x.get("email") or ""))
+        return func.HttpResponse(json.dumps(out), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+@app.route(route="users/upsert", methods=["POST"])
+def users_upsert(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Admin-only: add/update a user so they appear in the picker even if they haven't logged in.
+    Body: { email, displayName, roles?: ["employee"] }
+    """
+    pr, err = _ensure_admin(req)
+    if err: return err
+    try:
+        data = req.get_json()
+        email = (data.get("email") or "").strip().lower()
+        display = (data.get("displayName") or "").strip()
+        roles = data.get("roles") or ["employee"]
+        if not email:
+            return func.HttpResponse(json.dumps({"error":"email required"}), mimetype="application/json", status_code=400)
+        if not display:
+            display = _derive_display_name(email)
+        c = _users_container()
+        body = {
+            "id": email,
+            "tenantId": "default",
+            "docType": "User",
+            "email": email,
+            "displayName": display,
+            "roles": roles,
+            "updatedAt": _now_iso()
+        }
+        try:
+            _ = c.read_item(item=email, partition_key="default")
+            c.replace_item(item=email, body=body)
+        except Exception:
+            body["createdAt"] = _now_iso()
+            c.create_item(body)
+        return func.HttpResponse(json.dumps(body), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)

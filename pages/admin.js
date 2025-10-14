@@ -1,3 +1,4 @@
+import AssigneePicker from "../components/AssigneePicker";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { InteractiveGroupedBars as FixedGroupedBars } from "../components/Charts";
 

@@ -1,41 +1,42 @@
 {
   "navigationFallback": { "rewrite": "/index.html", "exclude": ["/api/*", "/.auth/*"] },
-
   "routes": [
     { "route": "/", "allowedRoles": ["anonymous", "authenticated"] },
 
-    /* Admin app (lock both the root and any subpaths) */
-    { "route": "/admin",    "allowedRoles": ["admin"] },
-    { "route": "/admin/*",  "allowedRoles": ["admin"] },
+    { "route": "/admin",   "allowedRoles": ["admin"] },
+    { "route": "/admin/*", "allowedRoles": ["admin"] },
 
-    /* Employee app */
     { "route": "/employee",   "allowedRoles": ["authenticated", "employee"] },
     { "route": "/employee/*", "allowedRoles": ["authenticated", "employee"] },
 
+    /* Users directory */
+    { "route": "/api/users",          "methods": ["GET"],                 "allowedRoles": ["admin"] },
+    { "route": "/api/users/upsert",   "methods": ["POST"],                "allowedRoles": ["admin"] },
+    { "route": "/api/users/seen",     "methods": ["GET","POST"],          "allowedRoles": ["authenticated","employee","admin"] },
+
     /* Reports & admin-only expense ops */
-    { "route": "/api/report/*",            "allowedRoles": ["admin"] },
-    { "route": "/api/expenses/approve",    "allowedRoles": ["admin"] },
-    { "route": "/api/expenses/reject",     "allowedRoles": ["admin"] },
-    { "route": "/api/expenses/pending",    "allowedRoles": ["admin"] },
-    { "route": "/api/expenses/delete",     "methods": ["POST","DELETE"], "allowedRoles": ["admin"] },
+    { "route": "/api/report/*",       "allowedRoles": ["admin"] },
+    { "route": "/api/expenses/approve", "allowedRoles": ["admin"] },
+    { "route": "/api/expenses/reject",  "allowedRoles": ["admin"] },
+    { "route": "/api/expenses/pending", "allowedRoles": ["admin"] },
+    { "route": "/api/expenses/delete",  "methods": ["POST","DELETE"], "allowedRoles": ["admin"] },
 
     /* Products admin */
-    { "route": "/api/products",            "methods": ["POST"],          "allowedRoles": ["admin"] },
-    { "route": "/api/products/delete",     "methods": ["POST","DELETE"], "allowedRoles": ["admin"] },
+    { "route": "/api/products",          "methods": ["POST"], "allowedRoles": ["admin"] },
+    { "route": "/api/products/delete",   "methods": ["POST","DELETE"], "allowedRoles": ["admin"] },
 
     /* Tasks admin */
-    { "route": "/api/tasks/limits",        "allowedRoles": ["admin"] },
-    { "route": "/api/tasks",               "methods": ["POST","PUT"],    "allowedRoles": ["admin"] },
-    { "route": "/api/tasks/update",        "methods": ["POST","PUT"],    "allowedRoles": ["admin"] },
-    { "route": "/api/tasks/delete",        "methods": ["POST","DELETE"], "allowedRoles": ["admin"] },
+    { "route": "/api/tasks/limits",  "allowedRoles": ["admin"] },
+    { "route": "/api/tasks",         "methods": ["POST","PUT"], "allowedRoles": ["admin"] },
+    { "route": "/api/tasks/update",  "methods": ["POST","PUT"], "allowedRoles": ["admin"] },
+    { "route": "/api/tasks/delete",  "methods": ["POST","DELETE"], "allowedRoles": ["admin"] },
 
-    /* CORS preflight passes through */
+    /* CORS preflight */
     { "route": "/api/*", "methods": ["OPTIONS"], "allowedRoles": ["anonymous"] },
 
-    /* Everything else under /api requires an authenticated user (employees & admins) */
+    /* Authenticated API default */
     { "route": "/api/*", "allowedRoles": ["authenticated", "employee", "admin"] }
   ],
-
   "responseOverrides": {
     "401": { "statusCode": 302, "redirect": "/.auth/login/aad?post_login_redirect_uri=/after-login" },
     "403": { "statusCode": 302, "redirect": "/employee" }

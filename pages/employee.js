@@ -100,6 +100,28 @@ export default function Employee() {
   const [editAmount, setEditAmount] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
 
+  // --- Products: fetch once and map id -> name (and sku)
+  const [products, setProducts] = useState([]);
+  const productLabel = useMemo(() => {
+    const map = {};
+    for (const p of products || []) {
+      const id  = p.id || p.productId;
+      const nm  = p.name || p.title || id;
+      const sku = p.sku ? ` (${p.sku})` : "";
+      if (id) map[id] = nm + sku;
+    }
+    return map;
+  }, [products]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const j = await fetch(`/api/products?tenantId=${tenantId}`).then(r=>r.json());
+        setProducts(Array.isArray(j) ? j : []);
+      } catch {}
+    })();
+  }, [tenantId]);
+
   // Load tasks
   useEffect(() => {
     (async () => {
@@ -326,11 +348,12 @@ export default function Employee() {
                       <strong>Products:</strong>{" "}
                       {Array.isArray(selected.items) && selected.items.length > 0 ? (
                         <ul style={{margin:"6px 0 0 16px", padding:0}}>
-                          {selected.items.map((it, idx) => (
-                            <li key={idx} style={{fontSize:13}}>
-                              {(it.productId || it.product || "—")} × {Number(it.qty ?? it.quantity ?? 1)}
-                            </li>
-                          ))}
+                          {selected.items.map((it, idx) => {
+                            const id   = it.productId || it.product || "";
+                            const name = productLabel[id] || id || "Item";
+                            const qty  = Number(it.qty ?? it.quantity ?? 1);
+                            return <li key={idx} style={{fontSize:13}}>{name}{qty>1 ? ` × ${qty}` : ""}</li>;
+                          })}
                         </ul>
                       ) : "—"}
                     </div>
@@ -437,11 +460,11 @@ const styles = {
   taskRow: {
     textAlign:"left",
     width:"100%",
-    minHeight: 112,                // <- bigger tile
+    minHeight: 96,
     border:"1px solid #e5e7eb",
     background:"#ffffff",
     borderRadius:12,
-    padding: "16px 18px",          // <- more padding
+    padding:"14px 16px",
     cursor:"pointer",
     outline:"none",
     boxShadow:"0 1px 2px rgba(0,0,0,0.04)",
@@ -450,12 +473,12 @@ const styles = {
   },
   taskRowActive: { background:"#eef6ff", borderColor:"#c9e2ff", boxShadow:"0 0 0 2px #e6f0ff inset" },
 
-  rowTop: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 },
-  taskTitle:{ fontWeight:700, color:"#0f172a", fontSize:16, overflow:"hidden", whiteSpace: "normal", paddingRight:8 },
-  slaLine:{ fontSize: 14, color:"#111827", lineHeight:"20px" },
+  rowTop: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" },
+  taskTitle:{ fontWeight:700, color:"#0f172a", fontSize:16, overflow:"hidden", whiteSpace:"normal", paddingRight:8, lineHeight:"20px", minWidth:0 },
+  slaLine:{ fontSize:14, color:"#111827", lineHeight:"20px", whiteSpace:"normal" },
 
   // proximity pill styles
-  pillSoon:   { fontSize: 14, padding:"2px 6px", borderRadius:999, background:"#eff6ff", color:"#0b4d8a", border:"1px solid #cfe3ff" },
+  pillSoon:   { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#eff6ff", color:"#0b4d8a", border:"1px solid #cfe3ff" },
   pillWarn:   { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#fff7ed", color:"#a05a00", border:"1px solid #fde2bd" },
   pillDanger: { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fecaca" },
 

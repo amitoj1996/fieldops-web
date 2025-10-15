@@ -71,6 +71,7 @@ function slaTag(t){
   const start = t?.slaStart ? new Date(t.slaStart).getTime() : NaN;
   const end   = t?.slaEnd   ? new Date(t.slaEnd).getTime()   : NaN;
   const done  = (t?.status || "").toLowerCase() === "completed";
+  if (done) return null;
 
   if (!Number.isNaN(end) && !done && now > end)
     return { label: "Overdue",   style: styles.pillDanger };

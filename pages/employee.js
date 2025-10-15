@@ -522,7 +522,7 @@ const styles = {
     outline:"none",
     boxShadow:"0 1px 2px rgba(0,0,0,0.04)",
     display:"grid",
-    rowGap:8
+    rowGap: 8,
       boxSizing: "border-box",
   },
   taskRowActive: { background:"#eef6ff", borderColor:"#c9e2ff", boxShadow:"0 0 0 2px #e6f0ff inset" },

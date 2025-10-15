@@ -152,11 +152,17 @@ export default function Employee() {
     return (allTasks || []).filter(t => (t.assignee || "").toLowerCase() === myEmail);
   }, [allTasks, myEmail]);
 
-  /* ---------- NEW: Filters for My tasks ---------- */
-  const [taskQ, setTaskQ] = useState("");
-  const [prodQ, setProdQ] = useState("");
-  const [statusF, setStatusF] = useState("ALL");   // ALL | ASSIGNED | IN_PROGRESS | COMPLETED
-  const [proxF, setProxF]   = useState("ALL");     // ALL | STARTS_SOON | ENDS_SOON | OVERDUE
+  /* ---------- Filters ---------- */
+  // One combined search box (matches task title OR product names)
+  const [query, setQuery]   = useState("");     // search by title or product name
+  const [statusF, setStatusF] = useState("ALL");    // ALL | ASSIGNED | IN_PROGRESS | COMPLETED
+  const [proxF, setProxF]     = useState("ALL");    // ALL | STARTS_SOON | ENDS_SOON | OVERDUE
+
+  const productIndex = useMemo(() => {
+    const m = {};
+    for (const id in productLabel) m[id] = (productLabel[id]||"").toLowerCase();
+    return m;
+  }, [productLabel]);
 
   function proxFlags(t){
     const status=(t.status||"").toLowerCase();
@@ -173,38 +179,25 @@ export default function Employee() {
     };
   }
 
-  const productIndex = useMemo(() => {
-    // create a lower-cased name map for search
-    const m = {};
-    for (const id in productLabel) m[id] = (productLabel[id]||"").toLowerCase();
-    return m;
-  }, [productLabel]);
-
   const filteredTasks = useMemo(() => {
-    const q=(taskQ||"").trim().toLowerCase();
-    const pq=(prodQ||"").trim().toLowerCase();
+    const q=(query||"").trim().toLowerCase();
 
     return myTasks.filter(t => {
-      // title filter
-      if (q && !String(t.title||t.id||"").toLowerCase().includes(q)) return false;
-
-      // product filter: match any item name against prodQ
-      if (pq) {
+      // title OR product match
+      if (q) {
+        const titleHit = String(t.title||t.id||"").toLowerCase().includes(q);
         const items = Array.isArray(t.items)? t.items : [];
-        const hit = items.some(it => {
+        const productHit = items.some(it => {
           const id = it.productId || it.product || "";
           const name = productIndex[id] || String(id).toLowerCase();
-          return name.includes(pq);
+          return name.includes(q);
         });
-        if (!hit) return false;
+        if (!titleHit && !productHit) return false;
       }
-
       // status filter
       if (statusF !== "ALL") {
-        const s = String(t.status||"").toUpperCase();
-        if (s !== statusF) return false;
+        if (String(t.status||"").toUpperCase() !== statusF) return false;
       }
-
       // proximity filter
       if (proxF !== "ALL") {
         const f = proxFlags(t);
@@ -212,11 +205,11 @@ export default function Employee() {
         if (proxF === "ENDS_SOON"   && !f.endsSoon)   return false;
         if (proxF === "OVERDUE"     && !f.overdue)    return false;
       }
-
       return true;
     });
-  }, [myTasks, taskQ, prodQ, statusF, proxF, productIndex]);
+  }, [myTasks, query, statusF, proxF, productIndex]);
 
+  /* ---------- Select task ---------- */
   async function selectTask(t) {
     setSelected(t);
     setDraft(null); setCategory(""); setEditedTotal("");
@@ -233,6 +226,7 @@ export default function Employee() {
     }
   }
 
+  /* ---------- Check-in/out ---------- */
   async function checkIn() {
     if (!selected) return;
     const r = await fetch(`/api/tasks/checkin`, {
@@ -271,6 +265,7 @@ export default function Employee() {
     await selectTask(selected);
   }
 
+  /* ---------- Upload/OCR/Finalize ---------- */
   async function onChooseFile(ev) {
     if (!selected) return alert("Select a task first.");
     const f = ev.target.files?.[0];
@@ -356,28 +351,17 @@ export default function Employee() {
     }
   }
 
-  /* ---------- TASK LIST (with filters) ---------- */
+  /* ---------- TASK LIST (filters + list) ---------- */
   const tasksPane =
     tasksLoading ? <p style={{margin:8}}>Loading…</p> :
     (myTasks.length === 0 ? <p style={{margin:8}}>No tasks assigned.</p> :
       <div>
-        {/* Filter bar */}
-        <div style={{
-          display:"grid",
-          gridTemplateColumns:"1fr",
-          gap:6,
-          marginBottom:10
-        }}>
+        {/* Filter bar (stacked) */}
+        <div style={{display:"grid", gridTemplateColumns:"1fr", gap:6, marginBottom:10}}>
           <input
-            placeholder="Search title…"
-            value={taskQ}
-            onChange={(e)=>setTaskQ(e.target.value)}
-            style={styles.input}
-          />
-          <input
-            placeholder="Filter by product…"
-            value={prodQ}
-            onChange={(e)=>setProdQ(e.target.value)}
+            placeholder="Search title or product…"
+            value={query}
+            onChange={(e)=>setQuery(e.target.value)}
             style={styles.input}
           />
           <select value={statusF} onChange={(e)=>setStatusF(e.target.value)} style={styles.input}>
@@ -527,7 +511,7 @@ export default function Employee() {
                         <li key={e.id} style={{margin:"10px 0", borderBottom:"1px solid #f2f2f2", paddingBottom:8}}>
                           <div><strong>{e.category || "(uncategorized)"}:</strong> {ru(e.editedTotal ?? e.total)} — {e.approval?.status || "—"}</div>
                           <div style={{fontSize:12, color:"#555"}}>{new Date(e.createdAt).toLocaleString()} — {e.merchant || "Merchant"}</div>
-                          <div style={{display:"flex", gap:6, marginTop:6}}>
+                          <div style={{display:"flex", gap:8, marginTop:6}}>
                             <button onClick={() => openReceipt(e)} style={styles.btnSmall}>Open receipt</button>
                             {e.approval?.status === "REJECTED" && (
                               <button onClick={() => beginEdit(e)} style={styles.btnSmall}>Edit &amp; resubmit</button>
@@ -551,7 +535,7 @@ export default function Employee() {
                   {draft && (
                     <div style={{marginTop:12, border:"1px solid #eee", borderRadius:8, padding:12}}>
                       <div style={{fontSize:12, color:"#666"}}>Detected: {draft.merchant ? `${draft.merchant} • ` : ""}{draft.date || ""} {draft.currency ? `• ${draft.currency}` : ""}</div>
-                      <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, marginTop:8, maxWidth:700}}>
+                      <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginTop:8, maxWidth:700}}>
                         <label>Category
                           <select value={category} onChange={e=>setCategory(e.target.value)}>
                             <option value="">— Select —</option>
@@ -600,7 +584,7 @@ const styles = {
   tasksList: {
     display:"flex",
     flexDirection:"column",
-    gap:12,
+    gap:14,
     maxHeight: 420,
     overflow:"auto",
     paddingRight: 2
@@ -608,11 +592,11 @@ const styles = {
   taskRow: {
     textAlign:"left",
     width:"100%",
-    minHeight: 96,
+    minHeight: 140,
     border:"1px solid #e5e7eb",
     background:"#ffffff",
     borderRadius:12,
-    padding:"14px 16px",
+    padding:"16px 18px 22px",
     cursor:"pointer",
     outline:"none",
     boxShadow:"0 1px 2px rgba(0,0,0,0.04)",
@@ -628,7 +612,7 @@ const styles = {
 
   // inputs for filter bar
   input: {
-    width:"100%", padding:"8px 10px", border:"1px solid #e5e7eb", borderRadius:8, background:"#fff", outline:"none"
+    width:"100%", padding:"6px 10px", border:"1px solid #e5e7eb", borderRadius:10, background:"#f9fafb", outline:"none"
   },
 
   // proximity pill styles

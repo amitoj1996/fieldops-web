@@ -1,0 +1,30 @@
+name: Azure Static Web Apps (dev)
+
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  build_and_deploy_dev:
+    runs-on: ubuntu-latest
+    name: Build and Deploy Dev
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+          lfs: false
+      - name: Build And Deploy (dev)
+        id: builddeploy
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          # Use the same SWA token you already have for production
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_ZEALOUS_WATER_087FDBF1E }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          # Your current build settings
+          app_location: "/"         # App source code path
+          api_location: "api"       # API source code path
+          output_location: "out"    # Next.js export folder
+          # This is the key line: create/use a named "dev" environment
+          deployment_environment: "dev"

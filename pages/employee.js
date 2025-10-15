@@ -37,11 +37,18 @@ function remainingByCategory(task, expenses) {
   return rem;
 }
 
-function fmtSLA(s,e){
-  const a = s ? new Date(s).toLocaleString() : "—";
-  const b = e ? new Date(e).toLocaleString() : "—";
-  return `${a} → ${b}`;
+function fmtLocal(iso){
+  if(!iso) return "—";
+  const d=new Date(iso);
+  const mon=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getMonth()];
+  const day=d.getDate();
+  const ord=(n)=>{const s=["th","st","nd","rd"],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0]);};
+  let h=d.getHours(); const m=("0"+d.getMinutes()).slice(-2);
+  const ap=h>=12?"PM":"AM"; h=h%12; if(h===0) h=12;
+  return `${ord(day)} ${mon} ${d.getFullYear()}, ${h}:${m} ${ap}`;
 }
+function fmtSLA(s,e){ return `${fmtLocal(s)} → ${fmtLocal(e)}`; }
+
 function statusBadge(s){
   const v = (s||"").toLowerCase();
   const m = {
@@ -51,10 +58,28 @@ function statusBadge(s){
   }[v] || {bg:"#f3f4f6", fg:"#374151", text:(s||"—")};
   return (
     <span style={{
-      justifySelf:"end", fontSize:12, padding:"2px 8px", borderRadius:999,
+      fontSize:12, padding:"2px 8px", borderRadius:999,
       background:m.bg, color:m.fg, border:"1px solid rgba(0,0,0,0.05)"
     }}>{m.text}</span>
   );
+}
+
+/* ---- SLA proximity tags on tile ---- */
+function slaTag(t){
+  const now = Date.now();
+  const ONE_DAY = 24*60*60*1000;
+  const start = t?.slaStart ? new Date(t.slaStart).getTime() : NaN;
+  const end   = t?.slaEnd   ? new Date(t.slaEnd).getTime()   : NaN;
+  const done  = (t?.status || "").toLowerCase() === "completed";
+
+  if (done) return null;                            // hide pills once completed
+  if (!Number.isNaN(end) && now > end)
+    return { label: "Overdue",   style: styles.pillDanger };
+  if (!Number.isNaN(end) && end - now <= ONE_DAY && end - now >= 0)
+    return { label: "Ends soon", style: styles.pillWarn };
+  if (!Number.isNaN(start) && start - now <= ONE_DAY && start - now >= 0)
+    return { label: "Starts soon", style: styles.pillSoon };
+  return null;
 }
 
 /* ------------ page ------------ */
@@ -85,6 +110,28 @@ export default function Employee() {
   const [editAmount, setEditAmount] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
 
+  // --- Products: fetch once and map id -> label (name+optional sku)
+  const [products, setProducts] = useState([]);
+  const productLabel = useMemo(() => {
+    const map = {};
+    for (const p of products || []) {
+      const id  = p.id || p.productId;
+      const nm  = p.name || p.title || id;
+      const sku = p.sku ? ` (${p.sku})` : "";
+      if (id) map[id] = nm + sku;
+    }
+    return map;
+  }, [products]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const j = await fetch(`/api/products?tenantId=${tenantId}`).then(r=>r.json());
+        setProducts(Array.isArray(j) ? j : []);
+      } catch {}
+    })();
+  }, [tenantId]);
+
   // Load tasks
   useEffect(() => {
     (async () => {
@@ -105,6 +152,64 @@ export default function Employee() {
     return (allTasks || []).filter(t => (t.assignee || "").toLowerCase() === myEmail);
   }, [allTasks, myEmail]);
 
+  /* ---------- Filters ---------- */
+  // One combined search box (matches task title OR product names)
+  const [query, setQuery]   = useState("");     // search by title or product name
+  const [statusF, setStatusF] = useState("ALL");    // ALL | ASSIGNED | IN_PROGRESS | COMPLETED
+  const [proxF, setProxF]     = useState("ALL");    // ALL | STARTS_SOON | ENDS_SOON | OVERDUE
+
+  const productIndex = useMemo(() => {
+    const m = {};
+    for (const id in productLabel) m[id] = (productLabel[id]||"").toLowerCase();
+    return m;
+  }, [productLabel]);
+
+  function proxFlags(t){
+    const status=(t.status||"").toLowerCase();
+    const done = status==="completed";
+    const now=Date.now();
+    const s=t.slaStart? new Date(t.slaStart).getTime(): NaN;
+    const e=t.slaEnd?   new Date(t.slaEnd).getTime():   NaN;
+    const DAY=24*60*60*1000;
+    return {
+      done,
+      overdue:   !done && Number.isFinite(e) && now>e,
+      endsSoon:  !done && Number.isFinite(e) && e>now && (e-now)<=DAY,
+      startsSoon:!done && Number.isFinite(s) && s>now && (s-now)<=DAY
+    };
+  }
+
+  const filteredTasks = useMemo(() => {
+    const q=(query||"").trim().toLowerCase();
+
+    return myTasks.filter(t => {
+      // title OR product match
+      if (q) {
+        const titleHit = String(t.title||t.id||"").toLowerCase().includes(q);
+        const items = Array.isArray(t.items)? t.items : [];
+        const productHit = items.some(it => {
+          const id = it.productId || it.product || "";
+          const name = productIndex[id] || String(id).toLowerCase();
+          return name.includes(q);
+        });
+        if (!titleHit && !productHit) return false;
+      }
+      // status filter
+      if (statusF !== "ALL") {
+        if (String(t.status||"").toUpperCase() !== statusF) return false;
+      }
+      // proximity filter
+      if (proxF !== "ALL") {
+        const f = proxFlags(t);
+        if (proxF === "STARTS_SOON" && !f.startsSoon) return false;
+        if (proxF === "ENDS_SOON"   && !f.endsSoon)   return false;
+        if (proxF === "OVERDUE"     && !f.overdue)    return false;
+      }
+      return true;
+    });
+  }, [myTasks, query, statusF, proxF, productIndex]);
+
+  /* ---------- Select task ---------- */
   async function selectTask(t) {
     setSelected(t);
     setDraft(null); setCategory(""); setEditedTotal("");
@@ -121,6 +226,7 @@ export default function Employee() {
     }
   }
 
+  /* ---------- Check-in/out ---------- */
   async function checkIn() {
     if (!selected) return;
     const r = await fetch(`/api/tasks/checkin`, {
@@ -159,6 +265,7 @@ export default function Employee() {
     await selectTask(selected);
   }
 
+  /* ---------- Upload/OCR/Finalize ---------- */
   async function onChooseFile(ev) {
     if (!selected) return alert("Select a task first.");
     const f = ev.target.files?.[0];
@@ -244,72 +351,60 @@ export default function Employee() {
     }
   }
 
-  // ----- Edit & Resubmit (for REJECTED expenses) — no comment -----
-  function beginEdit(e) {
-    setEditExp(e);
-    setEditCategory(e.category || "");
-    const amt = e.editedTotal ?? e.total ?? "";
-    setEditAmount(amt);
-  }
-
-  async function submitEdit() {
-    if (!selected || !editExp) return;
-    if (!editCategory) return alert("Choose a category");
-    const amt = Number(editAmount || 0);
-    if (!Number.isFinite(amt) || amt <= 0) return alert("Enter a valid amount");
-    setSavingEdit(true);
-    try {
-      const body = {
-        tenantId,
-        expenseId: editExp.id,
-        category: editCategory,
-        total: amt
-      };
-      const r = await fetch(`/api/expenses/finalize`, {
-        method: "POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(body)
-      });
-      const j = await r.json();
-      if (!r.ok) return alert(j.error || "Resubmit failed");
-
-      setEditExp(null);
-      setEditCategory("");
-      setEditAmount("");
-
-      await selectTask(selected);
-
-      const st = j?.approval?.status;
-      if (st === "AUTO_APPROVED") {
-        alert("Updated expense auto-approved (within remaining).");
-      } else if (st === "PENDING_REVIEW") {
-        alert("Updated expense submitted for review.");
-      } else {
-        alert("Updated.");
-      }
-    } catch (e) {
-      alert(e.message || "Resubmit failed");
-    } finally {
-      setSavingEdit(false);
-    }
-  }
-
+  /* ---------- TASK LIST (filters + list) ---------- */
   const tasksPane =
     tasksLoading ? <p style={{margin:8}}>Loading…</p> :
     (myTasks.length === 0 ? <p style={{margin:8}}>No tasks assigned.</p> :
-      <div style={styles.tasksList}>
-        {myTasks.map(t => (
-          <button key={t.id} onClick={() => selectTask(t)} style={{
-            ...styles.taskRow,
-            ...(selected?.id === t.id ? styles.taskRowActive : null)
-          }}>
-            <div style={styles.taskTitle} title={t.title || t.id}>{t.title || t.id}</div>
-            <div style={styles.taskBadge}>{statusBadge(t.status)}</div>
-            <div style={styles.taskSLA} title={fmtSLA(t.slaStart, t.slaEnd)}>
-              <span style={{color:"#6b7280"}}>SLA: </span>{fmtSLA(t.slaStart, t.slaEnd)}
-            </div>
-          </button>
-        ))}
+      <div>
+        {/* Filter bar (stacked) */}
+        <div style={{display:"grid", gridTemplateColumns:"1fr", gap:6, marginBottom:10}}>
+          <input
+            placeholder="Search title or product…"
+            value={query}
+            onChange={(e)=>setQuery(e.target.value)}
+            style={styles.input}
+          />
+          <select value={statusF} onChange={(e)=>setStatusF(e.target.value)} style={styles.input}>
+            <option value="ALL">All statuses</option>
+            <option value="ASSIGNED">Assigned</option>
+            <option value="IN_PROGRESS">In progress</option>
+            <option value="COMPLETED">Completed</option>
+          </select>
+          <select value={proxF} onChange={(e)=>setProxF(e.target.value)} style={styles.input}>
+            <option value="ALL">All proximity</option>
+            <option value="STARTS_SOON">Starts soon (24h)</option>
+            <option value="ENDS_SOON">Ends soon (24h)</option>
+            <option value="OVERDUE">Overdue</option>
+          </select>
+        </div>
+
+        {filteredTasks.length === 0 ? (
+          <p style={{margin:8}}>No tasks match the filters.</p>
+        ) : (
+          <div style={styles.tasksList}>
+            {filteredTasks.map(t => {
+              const tag = slaTag(t);
+              return (
+                <button key={t.id} onClick={() => selectTask(t)} style={{
+                  ...styles.taskRow,
+                  ...(selected?.id === t.id ? styles.taskRowActive : null)
+                }}>
+                  <div style={styles.rowTop}>
+                    <div style={styles.taskTitle} title={t.title || t.id}>{t.title || t.id}</div>
+                    <div style={{display:"flex", gap:6, alignItems:"center"}}>
+                      {tag && <span style={tag.style}>{tag.label}</span>}
+                      {statusBadge(t.status)}
+                    </div>
+                  </div>
+                  <div style={styles.slaLine}>
+                    <div><span style={{color:"#6b7280", fontWeight:600}}>Start:</span> {fmtLocal(t.slaStart)}</div>
+                    <div><span style={{color:"#6b7280", fontWeight:600}}>End:</span> {fmtLocal(t.slaEnd)}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     );
 
@@ -320,7 +415,7 @@ export default function Employee() {
         Signed in as: <strong>{me?.userDetails || "—"}</strong>
       </div>
 
-      <section style={{display:"grid", gridTemplateColumns:"340px 1fr", gap:16}}>
+      <section style={{display:"grid", gridTemplateColumns:"360px 1fr", gap:16}}>
         <div>
           <div style={styles.card}>
             <div style={styles.cardHead}>My tasks</div>
@@ -342,7 +437,29 @@ export default function Employee() {
                   </div>
                 </div>
 
-                {/* Remaining budget */}
+                {/* Task details (visible only when selected) */}
+                <div style={{...styles.subCard, marginBottom:12}}>
+                  <div style={styles.subHead}>Task details</div>
+                  <div style={{fontSize:13, color:"#374151"}}>
+                    <div><strong>Type:</strong> {selected.type || "—"}</div>
+                    <div><strong>SLA:</strong> {fmtSLA(selected.slaStart, selected.slaEnd)}</div>
+                    <div style={{marginTop:6}}>
+                      <strong>Products:</strong>{" "}
+                      {Array.isArray(selected.items) && selected.items.length > 0 ? (
+                        <ul style={{margin:"6px 0 0 16px", padding:0}}>
+                          {selected.items.map((it, idx) => {
+                            const id   = it.productId || it.product || "";
+                            const name = productLabel[id] || id || "Item";
+                            const qty  = Number(it.qty ?? it.quantity ?? 1);
+                            return <li key={idx} style={{fontSize:13}}>{name} × {qty}</li>;
+                          })}
+                        </ul>
+                      ) : "—"}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Remaining budget + timeline */}
                 <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
                   <div style={styles.subCard}>
                     <div style={styles.subHead}>Budget usage</div>
@@ -384,7 +501,7 @@ export default function Employee() {
                 </div>
               </div>
 
-              {/* Expenses */}
+              {/* Expenses + Add expense */}
               <div style={{display:"grid", gridTemplateColumns:"1fr", gap:16, marginTop:12}}>
                 <div style={styles.card}>
                   <div style={styles.cardHead}>My expenses</div>
@@ -408,39 +525,6 @@ export default function Employee() {
                     </ul>
                   )}
                 </div>
-
-                {/* Edit rejected expense */}
-                {editExp && (
-                  <div style={{...styles.card, border:"2px solid #ffe0e0", background:"#fff8f8"}}>
-                    <div style={styles.cardHead}>Edit &amp; resubmit</div>
-                    {editExp?.approval?.note && (
-                      <div style={{fontSize:12, color:"#b22", margin:"-6px 0 10px"}}>Admin note: {editExp.approval.note}</div>
-                    )}
-                    <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, maxWidth:700}}>
-                      <label>Category
-                        <select value={editCategory} onChange={e=>setEditCategory(e.target.value)}>
-                          <option value="">— Select —</option>
-                          <option>Hotel</option>
-                          <option>Food</option>
-                          <option>Travel</option>
-                          <option>Other</option>
-                        </select>
-                      </label>
-                      <label>Amount (₹)
-                        <input type="number" step="0.01" value={editAmount} onChange={e=>setEditAmount(e.target.value)} />
-                      </label>
-                    </div>
-                    <div style={{display:"flex", gap:8, marginTop:10}}>
-                      <button onClick={submitEdit} disabled={savingEdit} style={styles.btn}>
-                        {savingEdit ? "Saving…" : "Resubmit"}
-                      </button>
-                      <button onClick={()=>{ setEditExp(null); setEditCategory(""); setEditAmount(""); }} style={styles.btnGhost}>Cancel</button>
-                    </div>
-                    <div style={{fontSize:12, color:"#666", marginTop:6}}>
-                      After resubmitting, this expense will be re-evaluated against the remaining budget for its category.
-                    </div>
-                  </div>
-                )}
 
                 {/* Upload + OCR + finalize new expense */}
                 <div style={styles.card}>
@@ -493,56 +577,48 @@ const styles = {
     boxShadow: "0 1px 0 rgba(16,24,40,.04)"
   },
   cardHead: { fontWeight: 700, marginBottom: 10, color:"#0f172a" },
-  subCard: { border:"1px dashed #e8e8ee", borderRadius:10, padding:12, background:"#fafafa" },
+  subCard: { border:"1px dashed #e8e8ee", borderRadius:10, padding:12, background:"#fafafa", marginBottom:12 },
   subHead: { fontWeight:600, color:"#344054", marginBottom:6 },
 
+  // --- My tasks list ---
   tasksList: {
     display:"flex",
     flexDirection:"column",
-    gap:8,
-    maxHeight: 340,
+    gap:14,
+    maxHeight: 420,
     overflow:"auto",
     paddingRight: 2
   },
   taskRow: {
-    display:"grid",
-    gridTemplateColumns:"1fr auto",
-    gridTemplateRows:"auto auto",
-    rowGap:4,
-    alignItems:"center",
     textAlign:"left",
     width:"100%",
-    border:"1px solid #eef0f4",
-    background:"#f9fafb",
-    borderRadius:10,
-    padding:"10px 12px",
+    minHeight: 140,
+    border:"1px solid #e5e7eb",
+    background:"#ffffff",
+    borderRadius:12,
+    padding:"16px 18px 22px",
     cursor:"pointer",
-    outline:"none"
+    outline:"none",
+    boxShadow:"0 1px 2px rgba(0,0,0,0.04)",
+    display:"grid",
+    rowGap:8,
+    boxSizing: "border-box"
   },
-  taskRowActive: {
-    background:"#eef6ff",
-    borderColor:"#c9e2ff"
+  taskRowActive: { background:"#eef6ff", borderColor:"#c9e2ff", boxShadow:"0 0 0 2px #e6f0ff inset" },
+
+  rowTop: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" },
+  taskTitle:{ fontWeight:700, color:"#0f172a", fontSize:16, overflow:"hidden", whiteSpace:"normal", paddingRight:8, lineHeight:"20px", minWidth:0 },
+  slaLine:{ fontSize:14, color:"#111827", lineHeight:"20px", whiteSpace:"normal", marginTop:2, marginBottom:2 },
+
+  // inputs for filter bar
+  input: {
+    width:"100%", padding:"6px 10px", border:"1px solid #e5e7eb", borderRadius:10, background:"#f9fafb", outline:"none"
   },
-  taskTitle:{
-    gridColumn:"1 / 2",
-    gridRow:"1 / 2",
-    fontWeight:600,
-    color:"#111827",
-    overflow:"hidden",
-    whiteSpace:"nowrap",
-    textOverflow:"ellipsis",
-    paddingRight:8
-  },
-  taskBadge:{ gridColumn:"2 / 3", gridRow:"1 / 2" },
-  taskSLA:{
-    gridColumn:"1 / 3",
-    gridRow:"2 / 3",
-    fontSize:12,
-    color:"#4b5563",
-    overflow:"hidden",
-    whiteSpace:"nowrap",
-    textOverflow:"ellipsis"
-  },
+
+  // proximity pill styles
+  pillSoon:   { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#eff6ff", color:"#0b4d8a", border:"1px solid #cfe3ff" },
+  pillWarn:   { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#fff7ed", color:"#a05a00", border:"1px solid #fde2bd" },
+  pillDanger: { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fecaca" },
 
   btn: {
     background:"#0b4d8a", color:"#fff", border:"1px solid #0b4d8a",

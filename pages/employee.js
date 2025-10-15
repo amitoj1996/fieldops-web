@@ -437,11 +437,11 @@ const styles = {
   taskRow: {
     textAlign:"left",
     width:"100%",
-    minHeight: 96,                // <- bigger tile
+    minHeight: 112,                // <- bigger tile
     border:"1px solid #e5e7eb",
     background:"#ffffff",
     borderRadius:12,
-    padding:"14px 16px",          // <- more padding
+    padding: "16px 18px",          // <- more padding
     cursor:"pointer",
     outline:"none",
     boxShadow:"0 1px 2px rgba(0,0,0,0.04)",
@@ -451,11 +451,11 @@ const styles = {
   taskRowActive: { background:"#eef6ff", borderColor:"#c9e2ff", boxShadow:"0 0 0 2px #e6f0ff inset" },
 
   rowTop: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 },
-  taskTitle:{ fontWeight:700, color:"#0f172a", fontSize:16, overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis", paddingRight:8 },
-  slaLine:{ fontSize:14, color:"#111827", lineHeight:"20px" },
+  taskTitle:{ fontWeight:700, color:"#0f172a", fontSize:16, overflow:"hidden", whiteSpace: "normal", paddingRight:8 },
+  slaLine:{ fontSize: 14, color:"#111827", lineHeight:"20px" },
 
   // proximity pill styles
-  pillSoon:   { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#eff6ff", color:"#0b4d8a", border:"1px solid #cfe3ff" },
+  pillSoon:   { fontSize: 14, padding:"2px 6px", borderRadius:999, background:"#eff6ff", color:"#0b4d8a", border:"1px solid #cfe3ff" },
   pillWarn:   { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#fff7ed", color:"#a05a00", border:"1px solid #fde2bd" },
   pillDanger: { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fecaca" },
 

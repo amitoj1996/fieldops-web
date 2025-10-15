@@ -364,8 +364,8 @@ export default function Employee() {
         {/* Filter bar */}
         <div style={{
           display:"grid",
-          gridTemplateColumns:"1fr 1fr 1fr 1fr",
-          gap:8,
+          gridTemplateColumns:"1fr",
+          gap:6,
           marginBottom:10
         }}>
           <input
@@ -527,7 +527,7 @@ export default function Employee() {
                         <li key={e.id} style={{margin:"10px 0", borderBottom:"1px solid #f2f2f2", paddingBottom:8}}>
                           <div><strong>{e.category || "(uncategorized)"}:</strong> {ru(e.editedTotal ?? e.total)} — {e.approval?.status || "—"}</div>
                           <div style={{fontSize:12, color:"#555"}}>{new Date(e.createdAt).toLocaleString()} — {e.merchant || "Merchant"}</div>
-                          <div style={{display:"flex", gap:8, marginTop:6}}>
+                          <div style={{display:"flex", gap:6, marginTop:6}}>
                             <button onClick={() => openReceipt(e)} style={styles.btnSmall}>Open receipt</button>
                             {e.approval?.status === "REJECTED" && (
                               <button onClick={() => beginEdit(e)} style={styles.btnSmall}>Edit &amp; resubmit</button>
@@ -551,7 +551,7 @@ export default function Employee() {
                   {draft && (
                     <div style={{marginTop:12, border:"1px solid #eee", borderRadius:8, padding:12}}>
                       <div style={{fontSize:12, color:"#666"}}>Detected: {draft.merchant ? `${draft.merchant} • ` : ""}{draft.date || ""} {draft.currency ? `• ${draft.currency}` : ""}</div>
-                      <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginTop:8, maxWidth:700}}>
+                      <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, marginTop:8, maxWidth:700}}>
                         <label>Category
                           <select value={category} onChange={e=>setCategory(e.target.value)}>
                             <option value="">— Select —</option>

@@ -37,7 +37,7 @@ function remainingByCategory(task, expenses) {
   return rem;
 }
 
-function fmtLocal(iso){ return iso ? new Date(iso).toLocaleString() : "—"; }
+function fmtLocal(iso){ if(!iso) return "—"; const d=new Date(iso); const mon=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getMonth()]; const day=d.getDate(); const ord=(n)=>{const s=["th","st","nd","rd"],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0]);}; let h=d.getHours(); const m=("0"+d.getMinutes()).slice(-2); const ap=h>=12?"PM":"AM"; h=h%12; if(h===0) h=12; return `${ord(day)} ${mon} ${d.getFullYear()}, ${h}:${m} ${ap}`; }
 function fmtSLA(s,e){ return `${fmtLocal(s)} → ${fmtLocal(e)}`; }
 
 function statusBadge(s){
@@ -300,9 +300,10 @@ export default function Employee() {
                   {statusBadge(t.status)}
                 </div>
               </div>
-              <div style={styles.slaLine} title={fmtSLA(t.slaStart, t.slaEnd)}>
-                <span style={{color:"#6b7280", fontWeight:600}}>SLA:</span>&nbsp;{fmtSLA(t.slaStart, t.slaEnd)}
-              </div>
+<div style={styles.slaLine}>
+  <div><span style={{color:"#6b7280", fontWeight:600}}>Start:</span> {fmtLocal(t.slaStart)}</div>
+  <div><span style={{color:"#6b7280", fontWeight:600}}>End:</span> {fmtLocal(t.slaEnd)}</div>
+</div>
             </button>
           );
         })}
@@ -352,7 +353,7 @@ export default function Employee() {
                             const id   = it.productId || it.product || "";
                             const name = productLabel[id] || id || "Item";
                             const qty  = Number(it.qty ?? it.quantity ?? 1);
-                            return <li key={idx} style={{fontSize:13}}>{name}{qty>1 ? ` × ${qty}` : ""}</li>;
+                            return <li key={idx} style={{fontSize:13}}>{name}{` × ${qty}`}</li>;
                           })}
                         </ul>
                       ) : "—"}
@@ -460,11 +461,11 @@ const styles = {
   taskRow: {
     textAlign:"left",
     width:"100%",
-    minHeight: 96,
+    minHeight: 120,
     border:"1px solid #e5e7eb",
     background:"#ffffff",
     borderRadius:12,
-    padding:"14px 16px",
+    padding: "16px 18px",
     cursor:"pointer",
     outline:"none",
     boxShadow:"0 1px 2px rgba(0,0,0,0.04)",
@@ -475,10 +476,10 @@ const styles = {
 
   rowTop: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" },
   taskTitle:{ fontWeight:700, color:"#0f172a", fontSize:16, overflow:"hidden", whiteSpace:"normal", paddingRight:8, lineHeight:"20px", minWidth:0 },
-  slaLine:{ fontSize:14, color:"#111827", lineHeight:"20px", whiteSpace:"normal" },
+  slaLine:{ fontSize: 14, color:"#111827", lineHeight:"20px", whiteSpace:"normal" },
 
   // proximity pill styles
-  pillSoon:   { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#eff6ff", color:"#0b4d8a", border:"1px solid #cfe3ff" },
+  pillSoon:   { fontSize: 14, padding:"2px 6px", borderRadius:999, background:"#eff6ff", color:"#0b4d8a", border:"1px solid #cfe3ff" },
   pillWarn:   { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#fff7ed", color:"#a05a00", border:"1px solid #fde2bd" },
   pillDanger: { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#fee2e2", color:"#7f1d1d", border:"1px solid #fecaca" },
 

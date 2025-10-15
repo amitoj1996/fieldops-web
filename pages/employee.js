@@ -71,9 +71,9 @@ function slaTag(t){
   const start = t?.slaStart ? new Date(t.slaStart).getTime() : NaN;
   const end   = t?.slaEnd   ? new Date(t.slaEnd).getTime()   : NaN;
   const done  = (t?.status || "").toLowerCase() === "completed";
-  if (done) return null;
 
-  if (!Number.isNaN(end) && !done && now > end)
+  if (done) return null;                            // hide pills once completed
+  if (!Number.isNaN(end) && now > end)
     return { label: "Overdue",   style: styles.pillDanger };
   if (!Number.isNaN(end) && end - now <= ONE_DAY && end - now >= 0)
     return { label: "Ends soon", style: styles.pillWarn };
@@ -151,6 +151,71 @@ export default function Employee() {
     if (!myEmail) return [];
     return (allTasks || []).filter(t => (t.assignee || "").toLowerCase() === myEmail);
   }, [allTasks, myEmail]);
+
+  /* ---------- NEW: Filters for My tasks ---------- */
+  const [taskQ, setTaskQ] = useState("");
+  const [prodQ, setProdQ] = useState("");
+  const [statusF, setStatusF] = useState("ALL");   // ALL | ASSIGNED | IN_PROGRESS | COMPLETED
+  const [proxF, setProxF]   = useState("ALL");     // ALL | STARTS_SOON | ENDS_SOON | OVERDUE
+
+  function proxFlags(t){
+    const status=(t.status||"").toLowerCase();
+    const done = status==="completed";
+    const now=Date.now();
+    const s=t.slaStart? new Date(t.slaStart).getTime(): NaN;
+    const e=t.slaEnd?   new Date(t.slaEnd).getTime():   NaN;
+    const DAY=24*60*60*1000;
+    return {
+      done,
+      overdue:   !done && Number.isFinite(e) && now>e,
+      endsSoon:  !done && Number.isFinite(e) && e>now && (e-now)<=DAY,
+      startsSoon:!done && Number.isFinite(s) && s>now && (s-now)<=DAY
+    };
+  }
+
+  const productIndex = useMemo(() => {
+    // create a lower-cased name map for search
+    const m = {};
+    for (const id in productLabel) m[id] = (productLabel[id]||"").toLowerCase();
+    return m;
+  }, [productLabel]);
+
+  const filteredTasks = useMemo(() => {
+    const q=(taskQ||"").trim().toLowerCase();
+    const pq=(prodQ||"").trim().toLowerCase();
+
+    return myTasks.filter(t => {
+      // title filter
+      if (q && !String(t.title||t.id||"").toLowerCase().includes(q)) return false;
+
+      // product filter: match any item name against prodQ
+      if (pq) {
+        const items = Array.isArray(t.items)? t.items : [];
+        const hit = items.some(it => {
+          const id = it.productId || it.product || "";
+          const name = productIndex[id] || String(id).toLowerCase();
+          return name.includes(pq);
+        });
+        if (!hit) return false;
+      }
+
+      // status filter
+      if (statusF !== "ALL") {
+        const s = String(t.status||"").toUpperCase();
+        if (s !== statusF) return false;
+      }
+
+      // proximity filter
+      if (proxF !== "ALL") {
+        const f = proxFlags(t);
+        if (proxF === "STARTS_SOON" && !f.startsSoon) return false;
+        if (proxF === "ENDS_SOON"   && !f.endsSoon)   return false;
+        if (proxF === "OVERDUE"     && !f.overdue)    return false;
+      }
+
+      return true;
+    });
+  }, [myTasks, taskQ, prodQ, statusF, proxF, productIndex]);
 
   async function selectTask(t) {
     setSelected(t);
@@ -291,32 +356,71 @@ export default function Employee() {
     }
   }
 
-  /* ---------- TASK LIST ---------- */
+  /* ---------- TASK LIST (with filters) ---------- */
   const tasksPane =
     tasksLoading ? <p style={{margin:8}}>Loading…</p> :
     (myTasks.length === 0 ? <p style={{margin:8}}>No tasks assigned.</p> :
-      <div style={styles.tasksList}>
-        {myTasks.map(t => {
-          const tag = slaTag(t);
-          return (
-            <button key={t.id} onClick={() => selectTask(t)} style={{
-              ...styles.taskRow,
-              ...(selected?.id === t.id ? styles.taskRowActive : null)
-            }}>
-              <div style={styles.rowTop}>
-                <div style={styles.taskTitle} title={t.title || t.id}>{t.title || t.id}</div>
-                <div style={{display:"flex", gap:6, alignItems:"center"}}>
-                  {tag && <span style={tag.style}>{tag.label}</span>}
-                  {statusBadge(t.status)}
-                </div>
-              </div>
-              <div style={styles.slaLine}>
-                <div><span style={{color:"#6b7280", fontWeight:600}}>Start:</span> {fmtLocal(t.slaStart)}</div>
-                <div><span style={{color:"#6b7280", fontWeight:600}}>End:</span> {fmtLocal(t.slaEnd)}</div>
-              </div>
-            </button>
-          );
-        })}
+      <div>
+        {/* Filter bar */}
+        <div style={{
+          display:"grid",
+          gridTemplateColumns:"1fr 1fr 1fr 1fr",
+          gap:8,
+          marginBottom:10
+        }}>
+          <input
+            placeholder="Search title…"
+            value={taskQ}
+            onChange={(e)=>setTaskQ(e.target.value)}
+            style={styles.input}
+          />
+          <input
+            placeholder="Filter by product…"
+            value={prodQ}
+            onChange={(e)=>setProdQ(e.target.value)}
+            style={styles.input}
+          />
+          <select value={statusF} onChange={(e)=>setStatusF(e.target.value)} style={styles.input}>
+            <option value="ALL">All statuses</option>
+            <option value="ASSIGNED">Assigned</option>
+            <option value="IN_PROGRESS">In progress</option>
+            <option value="COMPLETED">Completed</option>
+          </select>
+          <select value={proxF} onChange={(e)=>setProxF(e.target.value)} style={styles.input}>
+            <option value="ALL">All proximity</option>
+            <option value="STARTS_SOON">Starts soon (24h)</option>
+            <option value="ENDS_SOON">Ends soon (24h)</option>
+            <option value="OVERDUE">Overdue</option>
+          </select>
+        </div>
+
+        {filteredTasks.length === 0 ? (
+          <p style={{margin:8}}>No tasks match the filters.</p>
+        ) : (
+          <div style={styles.tasksList}>
+            {filteredTasks.map(t => {
+              const tag = slaTag(t);
+              return (
+                <button key={t.id} onClick={() => selectTask(t)} style={{
+                  ...styles.taskRow,
+                  ...(selected?.id === t.id ? styles.taskRowActive : null)
+                }}>
+                  <div style={styles.rowTop}>
+                    <div style={styles.taskTitle} title={t.title || t.id}>{t.title || t.id}</div>
+                    <div style={{display:"flex", gap:6, alignItems:"center"}}>
+                      {tag && <span style={tag.style}>{tag.label}</span>}
+                      {statusBadge(t.status)}
+                    </div>
+                  </div>
+                  <div style={styles.slaLine}>
+                    <div><span style={{color:"#6b7280", fontWeight:600}}>Start:</span> {fmtLocal(t.slaStart)}</div>
+                    <div><span style={{color:"#6b7280", fontWeight:600}}>End:</span> {fmtLocal(t.slaEnd)}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     );
 
@@ -413,7 +517,7 @@ export default function Employee() {
                 </div>
               </div>
 
-              {/* Expenses */}
+              {/* Expenses + Add expense */}
               <div style={{display:"grid", gridTemplateColumns:"1fr", gap:16, marginTop:12}}>
                 <div style={styles.card}>
                   <div style={styles.cardHead}>My expenses</div>
@@ -438,25 +542,15 @@ export default function Employee() {
                   )}
                 </div>
 
-                {/* Add a new expense (restored) */}
+                {/* Upload + OCR + finalize new expense */}
                 <div style={styles.card}>
                   <div style={styles.cardHead}>Add a new expense</div>
-                  <input
-                    type="file"
-                    accept="image/*,application/pdf"
-                    ref={fileRef}
-                    onChange={onChooseFile}
-                    disabled={uploading}
-                  />
-                  {uploading && (
-                    <div style={{fontSize:12, color:"#666", marginTop:6}}>Uploading &amp; OCR…</div>
-                  )}
+                  <input type="file" accept="image/*,application/pdf" ref={fileRef} onChange={onChooseFile} disabled={uploading}/>
+                  {uploading && <div style={{fontSize:12, color:"#666", marginTop:6}}>Uploading & OCR…</div>}
 
                   {draft && (
                     <div style={{marginTop:12, border:"1px solid #eee", borderRadius:8, padding:12}}>
-                      <div style={{fontSize:12, color:"#666"}}>
-                        Detected: {draft.merchant ? `${draft.merchant} • ` : ""}{draft.date || ""}{draft.currency ? ` • ${draft.currency}` : ""}
-                      </div>
+                      <div style={{fontSize:12, color:"#666"}}>Detected: {draft.merchant ? `${draft.merchant} • ` : ""}{draft.date || ""} {draft.currency ? `• ${draft.currency}` : ""}</div>
                       <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginTop:8, maxWidth:700}}>
                         <label>Category
                           <select value={category} onChange={e=>setCategory(e.target.value)}>
@@ -514,23 +608,28 @@ const styles = {
   taskRow: {
     textAlign:"left",
     width:"100%",
-    minHeight: 132,
+    minHeight: 96,
     border:"1px solid #e5e7eb",
     background:"#ffffff",
     borderRadius:12,
-    padding: "16px 18px 20px",
+    padding:"14px 16px",
     cursor:"pointer",
     outline:"none",
     boxShadow:"0 1px 2px rgba(0,0,0,0.04)",
     display:"grid",
-    rowGap: 8,
-      boxSizing: "border-box",
+    rowGap:8,
+    boxSizing: "border-box"
   },
   taskRowActive: { background:"#eef6ff", borderColor:"#c9e2ff", boxShadow:"0 0 0 2px #e6f0ff inset" },
 
   rowTop: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" },
   taskTitle:{ fontWeight:700, color:"#0f172a", fontSize:16, overflow:"hidden", whiteSpace:"normal", paddingRight:8, lineHeight:"20px", minWidth:0 },
-  slaLine:{ fontSize:14, color:"#111827", lineHeight:"20px", whiteSpace:"normal" },
+  slaLine:{ fontSize:14, color:"#111827", lineHeight:"20px", whiteSpace:"normal", marginTop:2, marginBottom:2 },
+
+  // inputs for filter bar
+  input: {
+    width:"100%", padding:"8px 10px", border:"1px solid #e5e7eb", borderRadius:8, background:"#fff", outline:"none"
+  },
 
   // proximity pill styles
   pillSoon:   { fontSize:11, padding:"2px 6px", borderRadius:999, background:"#eff6ff", color:"#0b4d8a", border:"1px solid #cfe3ff" },

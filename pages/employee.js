@@ -513,16 +513,17 @@ const styles = {
   taskRow: {
     textAlign:"left",
     width:"100%",
-    minHeight: 96,
+    minHeight: 132,
     border:"1px solid #e5e7eb",
     background:"#ffffff",
     borderRadius:12,
-    padding:"14px 16px",
+    padding: "16px 18px 20px",
     cursor:"pointer",
     outline:"none",
     boxShadow:"0 1px 2px rgba(0,0,0,0.04)",
     display:"grid",
     rowGap:8
+      boxSizing: "border-box",
   },
   taskRowActive: { background:"#eef6ff", borderColor:"#c9e2ff", boxShadow:"0 0 0 2px #e6f0ff inset" },
 

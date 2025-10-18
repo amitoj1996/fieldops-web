@@ -858,7 +858,7 @@ export default function Admin() {
           openDelete={openDelete}
           closeDelete={closeDelete}
           confirmDelete={confirmDelete}
-         assignees={assignees} assignees={assignees}/>
+         assignees={assignees} assignees={assignees} assignees={assignees}/>
       )}
 
       {/* -------- EXPENSES -------- */}
@@ -911,7 +911,7 @@ export default function Admin() {
           closeEdit={closeEdit}
           saveEdit={saveEdit}
           products={products}
-          savingEdit={savingEdit} assignees={assignees} assignees={assignees} assignees={assignees}
+          savingEdit={savingEdit} assignees={assignees} assignees={assignees} assignees={assignees} assignees={assignees}
         />
       )}
 
@@ -1123,7 +1123,8 @@ function ProductAdmin({ products, reload, tenantId }) {
 function TasksTab(props) {
   const assignees = (props function TasksTab(props) {function TasksTab(props) { props.assignees) || [];
   const assignees = (props && props.assignees) || [];
-  const { ref, tip, onMove, onLeave } = useTooltip();
+  const {
+ref, tip, onMove, onLeave } = useTooltip();
 
   return (
     <div style={{ position: "relative" }} ref={ref}>

@@ -1228,3 +1228,95 @@ def users_upsert(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps(body), mimetype="application/json", status_code=200)
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+# ---------------------------
+# Directory (Employees) + Assignees
+# ---------------------------
+
+def _directory_container():
+    return _get_container_named(os.environ.get("DIRECTORY_CONTAINER", "Directory"))
+
+@app.route(route="directory", methods=["GET"])
+def directory_list(req: func.HttpRequest) -> func.HttpResponse:
+    # Admin only
+    pr, err = _ensure_admin(req)
+    if err: return err
+    try:
+        tenant = req.params.get("tenantId", "default")
+        dc = _directory_container()
+        q = "SELECT * FROM c WHERE c.docType='Employee' AND c.tenantId=@t ORDER BY c.name"
+        items = list(dc.query_items(q, parameters=[{"name":"@t","value":tenant}], enable_cross_partition_query=True))
+        return func.HttpResponse(json.dumps(items), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+@app.route(route="directory", methods=["POST"])
+def directory_upsert(req: func.HttpRequest) -> func.HttpResponse:
+    # Admin only
+    pr, err = _ensure_admin(req)
+    if err: return err
+    try:
+        data   = req.get_json()
+        tenant = (data.get("tenantId") or "default").strip()
+        email  = (data.get("email") or "").strip().lower()
+        name   = (data.get("name")  or "").strip() or None
+        role   = (data.get("role")  or "employee").strip().lower()
+        if not email:
+            return func.HttpResponse(json.dumps({"error":"email required"}), mimetype="application/json", status_code=400)
+        dc = _directory_container()
+        # Use email as id so upsert is easy
+        item = {
+            "id": email,
+            "tenantId": tenant,
+            "docType": "Employee",
+            "email": email,
+            "name": name,
+            "role": role,
+            "updatedAt": _now_iso()
+        }
+        try:
+            existing = dc.read_item(item=email, partition_key=tenant)
+            existing.update(item)
+            dc.replace_item(item=existing, body=existing)
+            out = existing
+        except Exception:
+            item["createdAt"] = _now_iso()
+            dc.create_item(item)
+            out = item
+        return func.HttpResponse(json.dumps(out), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+@app.route(route="assignees", methods=["GET"])
+def assignees(req: func.HttpRequest) -> func.HttpResponse:
+    # Any authenticated user can read suggestions
+    pr, err = _ensure_auth(req)
+    if err: return err
+    try:
+        tenant = req.params.get("tenantId", "default")
+        # From Directory
+        dc = _directory_container()
+        q1 = "SELECT c.email, c.name FROM c WHERE c.docType='Employee' AND c.tenantId=@t"
+        dir_items = list(dc.query_items(q1, parameters=[{"name":"@t","value":tenant}], enable_cross_partition_query=True))
+        # Distinct assignees already used in Tasks
+        tc = _tasks_container()
+        q2 = ("SELECT DISTINCT VALUE LOWER(c.assignee) "
+              "FROM c WHERE c.docType='Task' AND c.tenantId=@t AND IS_STRING(c.assignee)")
+        task_emails = list(tc.query_items(q2, parameters=[{"name":"@t","value":tenant}], enable_cross_partition_query=True))
+
+        # Merge (prefer Directory names)
+        merged = {}
+        for it in dir_items:
+            e = (it.get("email") or "").strip().lower()
+            if e:
+                merged[e] = {"email": e, "name": it.get("name")}
+        for e in task_emails:
+            ee = (e or "").strip().lower()
+            if ee and ee not in merged:
+                merged[ee] = {"email": ee, "name": None}
+
+        result = sorted(merged.values(), key=lambda x: (x["name"] or x["email"]))
+        return func.HttpResponse(json.dumps(result), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+

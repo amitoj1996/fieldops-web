@@ -5,6 +5,13 @@ import { InteractiveGroupedBars as FixedGroupedBars } from "../components/Charts
 /* ---------- auth + small utils ---------- */
 function useAuth() {
   const [me, setMe] = useState(null);
+  async function loadAssignees(){
+    try {
+      const j = await fetch(`/api/assignees?tenantId=${tenantId}`).then(r=>r.json());
+      setAssignees(Array.isArray(j) ? j : []);
+    } catch(e) { console.error(e); }
+  }
+
   useEffect(() => {
     (async () => {
       try {
@@ -1154,8 +1161,18 @@ function TasksTab(props) {
             <input value={newTask.title} onChange={(e) => setNewTask({ ...newTask, title: e.target.value })} />
           </label>
           <label>
-            Assignee (email)
-            <input value={newTask.assignee} onChange={(e) => setNewTask({ ...newTask, assignee: e.target.value })} />
+            Assignee
+            <input list="assigneesList"
+                   placeholder="name or email"
+                   value={newTask.assignee}
+                   onChange={(e) => setNewTask({ ...newTask, assignee: e.target.value })} />
+            <datalist id="assigneesList">
+              {assignees.map(a => (
+                <option key={a.email} value={a.email}>
+                  {a.name ? ` ()` : a.email}
+                </option>
+              ))}
+            </datalist>
           </label>
           <label>
             Type
@@ -2067,8 +2084,18 @@ function EditModal({ editForm, setEditForm, closeEdit, saveEdit, products, savin
             <input value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} />
           </label>
           <label>
-            Assignee (email)
-            <input value={editForm.assignee} onChange={(e) => setEditForm({ ...editForm, assignee: e.target.value })} />
+            Assignee
+            <input list="assigneesListEdit"
+                   placeholder="name or email"
+                   value={editForm.assignee}
+                   onChange={(e) => setEditForm({ ...editForm, assignee: e.target.value })} />
+            <datalist id="assigneesListEdit">
+              {assignees.map(a => (
+                <option key={a.email} value={a.email}>
+                  {a.name ? ` ()` : a.email}
+                </option>
+              ))}
+            </datalist>
           </label>
           <label>
             Type

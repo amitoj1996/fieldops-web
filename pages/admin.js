@@ -858,7 +858,7 @@ export default function Admin() {
           openDelete={openDelete}
           closeDelete={closeDelete}
           confirmDelete={confirmDelete}
-        />
+         assignees={assignees}/>
       )}
 
       {/* -------- EXPENSES -------- */}
@@ -911,7 +911,7 @@ export default function Admin() {
           closeEdit={closeEdit}
           saveEdit={saveEdit}
           products={products}
-          savingEdit={savingEdit} assignees={assignees}
+          savingEdit={savingEdit} assignees={assignees} assignees={assignees}
         />
       )}
 
@@ -1121,6 +1121,7 @@ function ProductAdmin({ products, reload, tenantId }) {
 }
 /* ---------- Tasks Tab ---------- */
 function TasksTab(props) {
+  const assignees = (props function TasksTab(props) {function TasksTab(props) { props.assignees) || [];
   const {
     products,
     tasks,
@@ -1167,7 +1168,7 @@ function TasksTab(props) {
                    value={newTask.assignee}
                    onChange={(e) => setNewTask({ ...newTask, assignee: e.target.value })} />
             <datalist id="assigneesList">
-              {assignees.map(a => (
+              {(assignees||[]).map(a => (
                 <option key={a.email} value={a.email}>
                   {a.name ? ` ()` : a.email}
                 </option>
@@ -2090,7 +2091,7 @@ function EditModal({ editForm, setEditForm, closeEdit, saveEdit, products, savin
                    value={editForm.assignee}
                    onChange={(e) => setEditForm({ ...editForm, assignee: e.target.value })} />
             <datalist id="assigneesListEdit">
-              {assignees.map(a => (
+              {(assignees||[]).map(a => (
                 <option key={a.email} value={a.email}>
                   {a.name ? ` ()` : a.email}
                 </option>

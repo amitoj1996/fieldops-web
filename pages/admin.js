@@ -911,7 +911,7 @@ export default function Admin() {
           closeEdit={closeEdit}
           saveEdit={saveEdit}
           products={products}
-          savingEdit={savingEdit}
+          savingEdit={savingEdit} assignees={assignees}
         />
       )}
 
@@ -2051,7 +2051,7 @@ function StatusTag({ s }) {
 }
 
 /* ---------- Modals ---------- */
-function EditModal({ editForm, setEditForm, closeEdit, saveEdit, products, savingEdit }) {
+function EditModal({ editForm, setEditForm, closeEdit, saveEdit, products, savingEdit, assignees }) {
   return (
     <div
       style={{

@@ -1158,7 +1158,7 @@ function TasksTab(props) {
             <AssigneePicker
               value={newTask.assignee}
               onChange={(email) => setNewTask((prev) => ({ ...prev, assignee: email }))}
-              fetchUrl="/api/users"
+              fetchUrl="/api/users?includeAdmins=true"
               allowFreeText={true}
               placeholder="Type a name or email…"
             />
@@ -2077,7 +2077,7 @@ function EditModal({ editForm, setEditForm, closeEdit, saveEdit, products, savin
             <AssigneePicker
               value={editForm.assignee}
               onChange={(email) => setEditForm((prev) => ({ ...prev, assignee: email }))}
-              fetchUrl="/api/users"
+              fetchUrl="/api/users?includeAdmins=true"
               allowFreeText={true}
               placeholder="Type a name or email…"
             />
